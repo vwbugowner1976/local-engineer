@@ -5,6 +5,7 @@ APP="$HOME/.local/share/local-engineer"
 CFG="$HOME/.config/local-engineer"
 mkdir -p "$APP" "$CFG" "$HOME/bin" "$HOME/.local/state/local-engineer"
 cp "$SRC/local_engineer.py" "$APP/local_engineer.py"
+cp "$SRC/engineer_runtime.py" "$APP/engineer_runtime.py"
 cp "$SRC/llm" "$HOME/bin/llm"
 chmod +x "$APP/local_engineer.py" "$HOME/bin/llm"
 cat > "$HOME/bin/local-engineer" <<WRAP

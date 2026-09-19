@@ -67,3 +67,44 @@ llm bonsai-tech
 ```
 
 The manager checks that no `mlx_worker.py` appears in Bonsai mode; if one does, it stops Technocore again to avoid another 16 GB unified-memory collision.
+
+
+## Durable Local Engineer (2026-09-19)
+
+The existing project/tool layer now uses `engineer_runtime.py` for durable sessions.
+No service is stopped automatically when the API is unavailable. The running model
+must identify as Bonsai. Context is measured with the server template/tokenizer,
+reserving output space in the 8192-token context. Search remains available during repair.
+
+```sh
+local-engineer ask "prospector: investigate the peer display regression"
+local-engineer resume ~/.local/state/local-engineer/sessions/RUN/working_state.json
+python3 -m unittest -v test_runtime
+python3 benchmark.py --level 4
+```
+
+Sessions save structured state, tool evidence, token/time metrics and backups after
+each tool. Resume rechecks Git and invalidates reads and verification from before
+the interruption. Project memory is a hint; current repository instructions win.
+Only one run per project is permitted on each orchestration host.
+
+Registry fields: `root`, `transport` (`local` or `ssh`), `ssh_host`,
+`preferred_branch`, `protected_branches`, `build`, `clean_build`, `test`,
+`artifact_path`, `notes`, `context_length`. Defaults protect main/master.
+SSH projects additionally require `runtime_dir` on the destination containing
+`engineer_runtime.py`, so command timeout enforcement runs on the execution host.
+SSH authentication and host resolution must already work; this program does not
+modify credentials or SSH configuration. WSL can also run the same Python CLI
+with `BONSAI_API_BASE` pointing at an authenticated SSH local forward.
+
+Commands are exact trusted registry commands or limited read-only Git / Python
+test invocations. Builds/tests execute project code: this is a guardrail, not an
+OS sandbox. Review registry commands and use isolated checkouts for unfamiliar code.
+Existing user files cannot be fully overwritten initially; exact replacements
+retain the rest and back up their original content. Branches are never switched,
+and commits/pushes are never performed automatically.
+
+Live benchmark levels 1-5 create disposable repos without commits. They test build
+discovery, status reporting, compiler-error localization, single-file repair, and
+multi-file repair. Level 6 uses an actual project with external acceptance tests;
+hardware regression checks must be reported separately from offline compilation.

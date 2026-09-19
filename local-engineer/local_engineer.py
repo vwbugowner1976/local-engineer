@@ -216,7 +216,7 @@ def tool_defs(phase='discovery'):
     if phase == 'force_action':
         return edit_verify
     common = list(edit_verify)
-    common.insert(2, f('read_file','Read a line range from a project file.',{'path':{'type':'string'},'start_line':{'type':'integer'},'end_line':{'type':'integer'}},['path']))
+    common.insert(2, f('read_file','Read contiguous source lines. Use search match line numbers for start_line; do not always start at 1. Follow the continuation line if output is bounded.',{'path':{'type':'string'},'start_line':{'type':'integer'},'end_line':{'type':'integer'}},['path']))
     if phase == 'discovery':
         common.insert(2, f('list_files','List project files to a bounded depth.',{'depth':{'type':'integer','minimum':1,'maximum':6}},[]))
         common.insert(3, f('search_text','Search text with ripgrep.',{'pattern':{'type':'string'},'glob':{'type':'string'}},['pattern']))
@@ -240,125 +240,9 @@ def dispatch(project, name, args):
         return 'tool error: ' + repr(e)
 
 
-def agent(project, task):
-    ensure_bonsai()
-    mid = model_id()
-    system = f'''You are Local Engineer, an autonomous coding/build agent working on project {project.name!r}.
-Project root: {project.root}. Transport: {project.transport}.
-Goal: complete the user's task with minimal, reviewable changes and verify them.
-Rules:
-- Start by checking git status and inspecting relevant files. Respect pre-existing user changes; never erase unrelated work.
-- Never push, reset, clean, force checkout, sudo, modify OS services, or access secrets/credentials.
-- Prefer replace_text for small edits. Use write_file mainly for new/small files.
-- Do not edit generated build outputs.
-- Run the narrowest useful tests/build after edits. If it fails, inspect the error and iterate.
-- Keep tool output bounded; read only needed line ranges. Older tool rounds may be dropped, but a compact working memory is provided. Discovery is time-boxed: once broad search tools disappear, proceed with a targeted edit or report a concrete blocker. Do not invent more searches to avoid acting.
-- Do not commit. End with a concise report: files changed, verification run, remaining risks.
-'''
-    tool_rounds=[]
-    working_memory=[]
-    seen_calls={}
-    edit_count=0
-    verify_count=0
-
-    def remember_tool(fn, args, result):
-        arg_text=json.dumps(args, ensure_ascii=False, sort_keys=True)
-        compact=' '.join((result or '').split())
-        if len(compact) > 700:
-            compact=compact[:500] + ' ... ' + compact[-180:]
-        working_memory.append(f'{fn} {arg_text} -> {compact}')
-        joined='\n'.join(working_memory)
-        while len(joined) > MAX_WORKING_MEMORY and len(working_memory) > 1:
-            working_memory.pop(0)
-            joined='\n'.join(working_memory)
-
-    for round_no in range(1, MAX_ROUNDS+1):
-        if edit_count:
-            phase='verify'
-        elif round_no >= FORCE_ACTION_ROUND:
-            phase='force_action'
-        elif round_no <= DISCOVERY_ROUNDS:
-            phase='discovery'
-        else:
-            phase='action'
-        tools=tool_defs(phase)
-
-        memory_text='\n'.join(working_memory)
-        user_content=task
-        if phase == 'discovery':
-            user_content += (
-                f'\n\nPHASE: DISCOVERY ({round_no}/{DISCOVERY_ROUNDS}). '
-                'Identify the exact implementation files/functions quickly. Do not keep broad-searching once the edit point is known.'
-            )
-        elif phase == 'action':
-            user_content += (
-                '\n\nPHASE: IMPLEMENTATION REQUIRED. Broad list/search tools are intentionally unavailable. '
-                'Use the evidence already collected plus at most a few targeted read_file calls. Make the smallest safe edit now. '
-                'If a concrete blocker prevents editing, stop and state that blocker instead of doing more exploration.'
-            )
-        elif phase == 'force_action':
-            user_content += (
-                '\n\nPHASE: FORCED ACTION. Investigation is over. read_file, list_files, and search_text are intentionally unavailable. '
-                'Use compact working memory and the latest context to edit with replace_text/write_file, inspect git diff, and test/build. '
-                'Do not use run_command for rg/grep/find/ls/sed/head/tail/wc. If you truly cannot edit safely with the evidence already gathered, '
-                'finish now with one precise blocker and the exact missing fact needed.'
-            )
-        else:
-            user_content += (
-                '\n\nPHASE: VERIFY. Edits already exist. Inspect the diff, run focused tests/build, and fix only failures caused by the change. '
-                'Do not restart broad architecture discovery.'
-            )
-        if memory_text:
-            user_content += (
-                '\n\nCompact working memory from earlier tool rounds '
-                '(may be incomplete; verify critical facts with tools):\n' + memory_text
-            )
-        messages=[{'role':'system','content':system},{'role':'user','content':user_content}]
-        for bundle in tool_rounds[-KEEP_TOOL_ROUNDS:]:
-            messages.extend(bundle)
-        payload={'model':mid,'messages':messages,'tools':tools,'tool_choice':'auto','temperature':0.2,'max_tokens':2048}
-        try:
-            resp=get_json(API_BASE+'/chat/completions',payload,timeout=900)
-        except urllib.error.HTTPError as e:
-            body=e.read().decode(errors='replace')
-            raise SystemExit(f'Bonsai API error {e.code}: {body[:1200]}')
-        msg=resp['choices'][0]['message']
-        calls=msg.get('tool_calls') or []
-        if not calls:
-            print(msg.get('content') or '[no final content]')
-            return 0
-        bundle=[{'role':'assistant','content':msg.get('content'),'tool_calls':calls}]
-        for call in calls:
-            fn=call['function']['name']
-            try: args=json.loads(call['function'].get('arguments') or '{}')
-            except Exception: args={}
-            signature=fn + ':' + json.dumps(args, ensure_ascii=False, sort_keys=True)
-            seen_calls[signature]=seen_calls.get(signature,0)+1
-            print(f'[tool {round_no}] {fn}')
-            if seen_calls[signature] > MAX_REPEAT_CALLS:
-                result=(
-                    'Repeated identical tool call suppressed. The same tool and arguments '
-                    'were already executed twice. Use the compact working memory/current context, '
-                    'change the query/line range/command, or proceed to an edit/test.'
-                )
-            elif phase == 'force_action' and fn == 'run_command' and re.match(
-                r'^\\s*(rg|grep|find|ls|sed|head|tail|wc)\\b', args.get('command','')
-            ):
-                result=(
-                    'Exploratory shell command suppressed in forced-action phase. '
-                    'Use targeted read_file, make the edit now, or finish with a concrete blocker.'
-                )
-            else:
-                result=dispatch(project,fn,args)
-            if fn in ('replace_text','write_file') and result.startswith('exit=0'):
-                edit_count += 1
-            if edit_count and fn in ('git_diff','build_project','run_command'):
-                verify_count += 1
-            remember_tool(fn,args,result)
-            bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})
-        tool_rounds.append(bundle)
-    print('[ERR] tool round limit reached')
-    return 2
+def agent(project, task, resume=None):
+    from engineer_runtime import run_agent
+    return run_agent(sys.modules[__name__], project, task, resume)
 
 
 def discover(cfg):
@@ -383,24 +267,51 @@ def main():
     sub.add_parser('status'); sub.add_parser('projects'); sub.add_parser('discover')
     b=sub.add_parser('build'); b.add_argument('project'); b.add_argument('extra',nargs='*')
     f=sub.add_parser('fix'); f.add_argument('project'); f.add_argument('task',nargs='+')
+    i=sub.add_parser('inspect'); i.add_argument('project'); i.add_argument('task',nargs='+')
     sub.add_parser('technocore-bonsai')
+    r=sub.add_parser('resume'); r.add_argument('checkpoint')
+    a=sub.add_parser('ask'); a.add_argument('task',nargs='+')
     args=ap.parse_args()
-    cfg=load_cfg()
+    cfg=load_cfg() if CFG.exists() or args.cmd!='resume' else {'settings':{},'projects':{}}
     if args.cmd=='status':
         subprocess.run([str(HOME/'bin/llm'),'status']); return
     if args.cmd=='projects':
         for k,v in cfg['projects'].items(): print(f"{k:20} {v.get('transport','local'):5} {v['root']}")
         return
     if args.cmd=='discover': raise SystemExit(discover(cfg))
-    pname='technocore' if args.cmd=='technocore-bonsai' else args.project
+    checkpoint=None
+    if args.cmd=='resume':
+        checkpoint=json.loads(pathlib.Path(args.checkpoint).read_text())
+        pname=checkpoint['project']
+        cfg['projects'][pname]=checkpoint['project_config']
+    elif args.cmd=='ask':
+        task=' '.join(args.task)
+        candidates=[name for name in cfg['projects'] if name.lower() in task.lower()]
+        if not candidates:
+            cwd=pathlib.Path.cwd().resolve()
+            candidates=[name for name,p in cfg['projects'].items()
+                        if p.get('transport','local')=='local' and
+                        (cwd==pathlib.Path(p['root']).resolve() or pathlib.Path(p['root']).resolve() in cwd.parents)]
+        if len(candidates)!=1: raise SystemExit('Specify exactly one project name or run inside its repo. Projects: '+', '.join(cfg['projects']))
+        pname=candidates[0]
+    else:
+        pname='technocore' if args.cmd=='technocore-bonsai' else args.project
     if pname not in cfg['projects']: raise SystemExit(f'unknown project: {pname}')
     p=Project(pname,cfg['projects'][pname],cfg)
+    if args.cmd=='inspect': p.cfg=dict(p.cfg,task_mode='inspect')
     if not p.exists(): raise SystemExit(f'project not reachable: {p.root} ({p.transport})')
+    if checkpoint:
+        raise SystemExit(agent(p,checkpoint['objective'],args.checkpoint))
     if args.cmd=='build':
+        from engineer_runtime import preflight
+        preflight(p)
         rc,out=p.build(' '.join(args.extra)); print(out); raise SystemExit(rc)
     if args.cmd=='technocore-bonsai':
         task='''Inspect the current local Technocore implementation and add a managed_bonsai LLM backend alongside the existing managed_mlx backend. Preserve managed_mlx behavior. managed_bonsai must call the local OpenAI-compatible Bonsai API at http://127.0.0.1:8080/v1 and must not spawn mlx_worker.py. Backend selection must honor environment variable TECHNOCORE_LLM_BACKEND, with values managed_bonsai or managed_mlx, while preserving the current default when the variable is absent. Reuse existing prompt, timeout, logging, draft/review/quality-gate behavior. Add or update deterministic tests and concise documentation. Do not touch secrets, signing identity, launch daemon plist files, or network posting safety rules. Run the existing unit tests and any focused new tests. Do not commit.'''
         raise SystemExit(agent(p,task))
     raise SystemExit(agent(p,' '.join(args.task)))
+
+from engineer_runtime import install
+install(sys.modules[__name__])
 
 if __name__=='__main__': main()
