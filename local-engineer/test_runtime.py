@@ -93,6 +93,11 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('needle',self.project.read_file('hello.py')[1])
         self.assertIn('hello.py:1:',self.project.search('needle')[1])
 
+    def test_search_no_match_is_successful_exploration(self):
+        rc,out=self.project.search('definitely-not-present')
+        self.assertEqual(rc,0)
+        self.assertIn('No matches',out)
+
     def test_large_file_exact_edit(self):
         text='a'*15000+'\nneedle\n'+'b'*16000
         (self.root/'large.txt').write_text(text)
@@ -119,6 +124,89 @@ class SafetyTests(unittest.TestCase):
         with patch.object(m,'get_json',side_effect=error) as request:
             with self.assertRaises(urllib.error.HTTPError): request_completion(m,{})
             self.assertEqual(request.call_count,1)
+
+    def test_failed_verification_discovery_is_semantically_bounded_and_rereflects(self):
+        (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
+        self.project.cfg['initial_verify']=True
+        self.project.cfg['test']='registered-failing-test'
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        wrong={'choices':[{'message':{'content':"Actual is 'Saved', expected is 'Ready', but prefer Saved."}}]}
+        corrected={'choices':[{'message':{'content':"Actual is 'Saved'; expected is 'Ready'. Change selection toward Ready."}}]}
+        first=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3)]
+        middle=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (4,1,2,3,4,1)]
+        last=[tool('search_text',{'pattern':'value%s'%n,'glob':'*.py'}) for n in range(5)]
+        responses=first+[wrong]+middle+[corrected]+last
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=responses), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(1,"assertion: actual 'Saved' != expected 'Ready'")):
+            self.assertEqual(m.agent(self.project,'repair failing peer selection'),2)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['reflections_this_generation'],2)
+        self.assertEqual(state['failed_verification_discovery_calls'],5)
+        self.assertEqual(state['status'],'blocked')
+
+    def test_second_reflection_can_replace_a_wrong_hypothesis_with_an_edit(self):
+        (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
+        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
+        self.project.cfg['initial_verify']=True
+        self.project.cfg['test']='registered-failing-test'
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4,1)]
+        wrong={'choices':[{'message':{'content':'The observed value is Saved, so preserve Saved.'}}]}
+        corrected={'choices':[{'message':{'content':'Actual is Saved; expected is Ready. Select the Ready value.'}}]}
+        edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
+        final={'choices':[{'message':{'content':'Result: corrected after test-evidence review.'}}]}
+        responses=reads[:3]+[wrong]+reads[3:]+[corrected,edit,final]
+        tests=iter([(1,"actual 'Saved' != expected 'Ready'"),(0,'test ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=responses), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            self.assertEqual(m.agent(self.project,'repair'),0)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['reflection_calls'],2)
+        self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
+
+    def test_resume_stale_hypothesis_is_reflected_again(self):
+        (self.root/'calc.py').write_text('value = 0\n')
+        checkpoint=self.root/'stale.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+            'build_status':'exit=0\\nbuild ok','test_status':"exit=1\\nactual 'Saved' != expected 'Ready'",
+            'hypothesis':'Prefer the earlier Saved peer.','reflection_calls':1,
+            'reflections_this_generation':1,'generation':0,'cache':{
+                '0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
+        reflection={'choices':[{'message':{'content':"Actual is 'Saved'; expected is 'Ready'. Prefer an edit that selects Ready."}}]}
+        done={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function','function':{'name':'finish_task','arguments':json.dumps({'report':'Need edit after corrected hypothesis.'})}}]}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=[reflection,done]):
+            m.agent(self.project,'ignored',str(checkpoint))
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['reflection_calls'],2)
+        self.assertFalse(state['force_reflection'])
+        self.assertIn('expected',state['hypothesis'])
+
+    def test_evidence_supported_edit_resets_stall_budget(self):
+        (self.root/'calc.py').write_text('value = 0\n')
+        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
+        checkpoint=self.root/'stale-edit.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+            'build_status':'exit=0\\nbuild ok','test_status':'exit=1\\nactual differs from expected',
+            'hypothesis':'stale','reflection_calls':1,'reflections_this_generation':1,
+            'failed_verification_discovery_calls':6,'generation':0,'cache':{
+                '0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
+        reflection={'choices':[{'message':{'content':'Actual is 0; expected is 2. Replace 0 with 2, then test.'}}]}
+        edit={'choices':[{'message':{'tool_calls':[{'id':'edit','type':'function','function':{'name':'replace_text','arguments':json.dumps({'path':'calc.py','old':'value = 0','new':'value = 2'})}}]}}]}
+        final={'choices':[{'message':{'content':'Result: verified minimal edit.'}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=[reflection,edit,final]):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['reflections_this_generation'],0)
+        self.assertEqual(state['failed_verification_discovery_calls'],0)
+        self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
 
     def test_stalled_discovery_gets_one_evidence_plan_then_repairs(self):
         (self.root/'calc.py').write_text('value = 0\n')

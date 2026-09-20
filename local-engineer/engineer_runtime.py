@@ -231,7 +231,11 @@ if shutil.which('rg'):
     for name in ('.env*','*secret*','*token*','*private*','*credential*'): args+=['--glob','!**/'+name]
     if glob: args+=['--glob',glob]
     args+=['--',pattern,'.']
-    raise SystemExit(subprocess.call(args))
+    result=subprocess.run(args)
+    if result.returncode == 1:
+        print('No matches')
+        raise SystemExit(0)
+    raise SystemExit(result.returncode)
 matches=0
 for directory, dirs, files in os.walk('.'):
     dirs[:]=[d for d in dirs if d not in excluded and not sensitive.search(d) and not pathlib.Path(directory,d).is_symlink()]
@@ -245,7 +249,8 @@ for directory, dirs, files in os.walk('.'):
             if re.search(pattern,line):
                 print(f'{rel}:{i}:{line[:500]}'); matches+=1
                 if matches>=80: print('[match limit reached; narrow glob]'); raise SystemExit(0)
-raise SystemExit(0 if matches else 1)
+if not matches: print('No matches')
+raise SystemExit(0)
 '''%(pattern,glob)
             return self.exec('python3 -c '+shlex.quote(code),60)
 
@@ -319,7 +324,7 @@ def _run_agent(m,project,task,resume=None):
     directory=m.STATE/'sessions'/run_id
     project.backup_root=m.STATE/'backups'/project.name/run_id
     project.backed_up=set()
-    state={'version':1,'objective':task,'project':project.name,'root':project.root,
+    state={'version':2,'objective':task,'project':project.name,'root':project.root,
            'branch':facts['branch'],'project_config':dict(project.cfg,root=project.root,transport=project.transport,ssh_host=project.host),'current_task':task,
            'known_facts':facts,'files_inspected':[],'files_modified':[],
            'inspected_symbols':[],'previous_searches':[], 'previous_commands':[],
@@ -327,6 +332,8 @@ def _run_agent(m,project,task,resume=None):
            'build_status':'not run','test_status':'not run','remaining_tasks':[task],
            'next_action':'Use supplied Git and README/AGENTS evidence. Answer informational tasks directly when sufficient; for repairs inspect only relevant source.',
            'rounds':0,'tool_calls':0,'cache_hits':0,'generation':0,'cache':{},
+           'reflection_calls':0,'reflections_this_generation':0,
+           'failed_verification_discovery_calls':0,'force_reflection':False,
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
     if resume:
@@ -340,6 +347,15 @@ def _run_agent(m,project,task,resume=None):
         state['known_facts']=facts
         state['cache']={}  # Disk may have changed while the agent was away.
         state['generation']+=1
+        # A checkpoint may contain a stale or contradictory hypothesis.  A resumed,
+        # unedited failed verification gets a fresh, bounded reflection budget.
+        state['reflections_this_generation']=0
+        failed_before_resume=any(str(state.get(k,'')).startswith('exit=') and not str(state.get(k,'')).startswith('exit=0')
+                                 for k in ('build_status','test_status'))
+        state['failed_verification_discovery_calls']=0
+        state['force_reflection']=bool(failed_before_resume and not state.get('files_modified'))
+        if state['force_reflection']:
+            state['next_action']='Re-evaluate the prior hypothesis against the failed verification before further discovery.'
         prior_reads=[key for key in old.get('cache',{}) if ':read_file:' in key][-3:]
         task=state['objective']
         state['status']='running'
@@ -385,15 +401,18 @@ def _run_agent(m,project,task,resume=None):
     def record(event):
         with (directory/'events.jsonl').open('a') as f:
             f.write(json.dumps(event,ensure_ascii=False)+'\n')
-    def reflect():
+    def verification_failed():
+        return any(str(state.get(k,'')).startswith('exit=') and not str(state.get(k,'')).startswith('exit=0')
+                   for k in ('build_status','test_status'))
+    def reflect(reason='discovery evidence'):
         evidence={}
         for key,value in [(k,v) for k,v in state['cache'].items() if ':read_file:' in k][-4:]:
             evidence[key.split(':read_file:',1)[1]]=value
         if not evidence: return
         prompt={'model':model,'temperature':0.2,'max_tokens':700,
                 'chat_template_kwargs':{'enable_thinking':False},
-                'messages':[{'role':'system','content':'Analyze this coding task from the actual source and failing verification. Give a concise root-cause hypothesis with evidence and the smallest specific edit to try next. If code is incomplete, state the exact missing range. Do not call tools, repeat a discovery checklist, or claim a change was made.'},
-                            {'role':'user','content':json.dumps({'task':task,'test_failure':state['test_status'],'source':evidence},ensure_ascii=False)[:14000]}]}
+                'messages':[{'role':'system','content':'Analyze this coding task from the actual source and failing verification. Treat the failing assertion as stronger evidence than an ambiguous task description. First state the observed actual value and expected value exactly when the test provides them. Then give a concise root-cause hypothesis and smallest specific edit. Self-check that the edit changes actual behavior toward expected behavior, and explicitly reject any hypothesis that contradicts the test evidence. If evidence is sufficient, prefer the minimal edit and test over more discovery. If code is incomplete, state the exact missing range. Do not call tools, repeat a discovery checklist, or claim a change was made.'},
+                            {'role':'user','content':json.dumps({'reason':reason,'task':task,'build_failure':state['build_status'],'test_failure':state['test_status'],'previous_hypothesis':state.get('hypothesis',''),'source':evidence},ensure_ascii=False)[:14000]}]}
         tokens=measure_tokens(m,prompt)
         if tokens+prompt['max_tokens']+256>int(project.cfg.get('context_length',8192)):
             return
@@ -403,9 +422,12 @@ def _run_agent(m,project,task,resume=None):
         state['prompt_tokens']+=usage.get('prompt_tokens',0)
         state['completion_tokens']+=usage.get('completion_tokens',0)
         state['reflection_calls']=state.get('reflection_calls',0)+1
+        state['reflections_this_generation']=state.get('reflections_this_generation',0)+1
+        state['failed_verification_discovery_calls']=0
+        state['force_reflection']=False
         state['hypothesis']=note[:1800]
         state['next_action']='Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.'
-        record({'reflection':note,'usage':usage})
+        record({'reflection':note,'reason':reason,'usage':usage})
         print('[hypothesis] saved evidence-based plan',flush=True)
         save()
     def verify_now():
@@ -476,8 +498,14 @@ Never claim a test passed without a successful tool result. If blocked state the
         save()
         for _ in range(m.MAX_ROUNDS):
             state['rounds']+=1
-            if not edited and project.cfg.get('task_mode')!='inspect' and state['rounds']>=4 and not state.get('reflection_calls'):
-                reflect()
+            if not edited and project.cfg.get('task_mode')!='inspect':
+                reflection_count=state.get('reflections_this_generation',0)
+                if state.get('force_reflection') and reflection_count<2:
+                    reflect('resume with unedited failed verification')
+                elif state['rounds']>=4 and reflection_count==0:
+                    reflect('initial discovery stalled')
+                elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
+                    reflect('failed verification remained unresolved after bounded discovery')
             compact={k:v for k,v in state.items() if k not in ('cache','project_config','known_facts')}
             user=task+'\nGit preflight: '+json.dumps(facts)+'\nRegistry: '+json.dumps(project.cfg)+'\nMemory hints (verify): '+json.dumps(memory)[:1800]+'\nWorking state: '+json.dumps(compact,ensure_ascii=False)[:6500]
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
@@ -593,6 +621,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                     rc,current=project._raw_read(args['path'])
                     if rc==0: state['file_hashes'][args['path']]=hashlib.sha256(current.encode()).hexdigest()
                     state['generation']+=1; state['cache']={}; no_progress=0
+                    state['reflections_this_generation']=0
+                    state['failed_verification_discovery_calls']=0
+                    state['force_reflection']=False
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run build_project and test_project, repair errors, inspect git_diff, then report. Do not reread unchanged files.'
                 if fn=='build_project': state['build_status']=result[:800]
@@ -611,6 +642,16 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['next_action']='Analyze the recorded failure, inspect only affected lines, repair, then rerun the same verification.'
                 if fn in ('run_command','build_project','test_project'):
                     state['cache']={}
+                if readonly and verification_failed() and not edited:
+                    state['failed_verification_discovery_calls']=state.get('failed_verification_discovery_calls',0)+1
+                    # Two evidence reviews per generation are enough to recover from
+                    # one bad hypothesis.  Further browsing after the final review is
+                    # a semantic stall even if each call has different arguments.
+                    if (state.get('reflections_this_generation',0)>=2 and
+                        state['failed_verification_discovery_calls']>=5):
+                        state['status']='blocked'
+                        state['next_action']='Failed verification remained unresolved after bounded discovery and two evidence reviews; checkpoint saved for human review.'
+                        save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
                 summary=result if len(result)<=850 else result[:200]+'\n...\n'+result[-600:]
                 state['supporting_evidence']=(str(state['supporting_evidence'])+'\n'+fn+': '+summary)[-2400:]
                 bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})
