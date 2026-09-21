@@ -206,7 +206,40 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['status'],'blocked')
         self.assertEqual(state['files_modified'],[])
-        self.assertTrue(state['experiment_required'])
+        self.assertTrue(state['targeted_discovery_required'])
+
+    def test_experiment_tool_schema_removes_discovery_and_keeps_edits(self):
+        (self.root/'calc.py').write_text('value = 0\n')
+        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
+        checkpoint=self.root/'resume-gate.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+            'build_status':'exit=0\\nbuild ok','test_status':'exit=1\\nactual 0 expected 2',
+            'cache':{'0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
+        seen=[]
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        def api(url,payload,timeout=600):
+            if 'tools' not in payload:
+                return {'choices':[{'message':{'content':json.dumps({'hypothesis':'value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace 0 with 2','missing_evidence':''})}}]}
+            names={entry['function']['name'] for entry in payload['tools']}
+            seen.append(names)
+            if len(seen)==1:
+                self.assertIn('read_file',names)
+                return tool('read_file',{'path':'calc.py','start_line':1,'end_line':1})
+            if len(seen)==2:
+                self.assertIn('read_file',names)
+                return tool('read_file',{'path':'calc.py','start_line':1,'end_line':1})
+            self.assertNotIn('read_file',names)
+            self.assertFalse({'search_text','list_files'} & names)
+            self.assertIn('replace_text',names)
+            self.assertIn('test_project',names)
+            return tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
+        final={'choices':[{'message':{'content':'Result: edit verified.'}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=lambda url,payload,timeout=600: final if len(seen)>=3 and 'tools' not in payload and payload['messages'][0]['content'].startswith('Report') else api(url,payload,timeout)):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+        self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
 
     def test_resume_stale_hypothesis_is_reflected_again(self):
         (self.root/'calc.py').write_text('value = 0\n')

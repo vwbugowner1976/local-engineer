@@ -336,6 +336,8 @@ def _run_agent(m,project,task,resume=None):
            'failed_verification_discovery_calls':0,'force_reflection':False,
            'hypothesis_ready':False,'experiment_required':False,
            'discovery_after_hypothesis':0,'hypothesis_generation':None,
+           'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
+           'targeted_discovery_required':False,'targeted_discovery_calls':0,
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
     if resume:
@@ -347,6 +349,8 @@ def _run_agent(m,project,task,resume=None):
         state.update(old)
         for key,default in {'hypothesis_ready':False,'experiment_required':False,
                             'discovery_after_hypothesis':0,'hypothesis_generation':None,
+                            'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
+                            'targeted_discovery_required':False,'targeted_discovery_calls':0,
                             'reflections_this_generation':0,
                             'failed_verification_discovery_calls':0}.items():
             state.setdefault(key,default)
@@ -365,6 +369,8 @@ def _run_agent(m,project,task,resume=None):
             state['hypothesis_ready']=False
             state['experiment_required']=False
             state['discovery_after_hypothesis']=0
+            state['targeted_discovery_required']=False
+            state['targeted_discovery_calls']=0
             state['next_action']='Re-evaluate the prior hypothesis against the failed verification before further discovery.'
         prior_reads=[key for key in old.get('cache',{}) if ':read_file:' in key][-3:]
         task=state['objective']
@@ -421,13 +427,34 @@ def _run_agent(m,project,task,resume=None):
         if not evidence: return
         prompt={'model':model,'temperature':0.2,'max_tokens':700,
                 'chat_template_kwargs':{'enable_thinking':False},
-                'messages':[{'role':'system','content':'Analyze this coding task from the actual source and failing verification. Treat the failing assertion as stronger evidence than an ambiguous task description. First state the observed actual value and expected value exactly when the test provides them. Then give a concise root-cause hypothesis and smallest specific edit. Self-check that the edit changes actual behavior toward expected behavior, and explicitly reject any hypothesis that contradicts the test evidence. If evidence is sufficient, prefer the minimal edit and test over more discovery. If code is incomplete, state the exact missing range. Do not call tools, repeat a discovery checklist, or claim a change was made.'},
+                'messages':[{'role':'system','content':'Analyze this coding task from the actual source and failing verification. Treat the failing assertion as stronger evidence than an ambiguous task description. Return ONLY one JSON object with keys: hypothesis, target_file, expected_effect, smallest_edit, missing_evidence. First derive actual and expected exactly when the test provides them. Self-check that smallest_edit changes actual behavior toward expected behavior; if no safe edit target is known, leave target_file and smallest_edit empty and name one exact missing fact in missing_evidence. Do not call tools, repeat discovery, or claim a change was made.'},
                             {'role':'user','content':json.dumps({'reason':reason,'task':task,'build_failure':state['build_status'],'test_failure':state['test_status'],'previous_hypothesis':state.get('hypothesis',''),'source':evidence},ensure_ascii=False)[:14000]}]}
         tokens=measure_tokens(m,prompt)
         if tokens+prompt['max_tokens']+256>int(project.cfg.get('context_length',8192)):
             return
         response=request_completion(m,prompt)
         note=response['choices'][0]['message'].get('content') or ''
+        structured={}
+        candidate=note.strip()
+        if candidate.startswith('```'):
+            candidate=candidate.split('\n',1)[-1].rsplit('```',1)[0].strip()
+        try:
+            decoded=json.loads(candidate)
+            if isinstance(decoded,dict): structured=decoded
+        except (TypeError,ValueError):
+            pass
+        source_paths=[]
+        for item in evidence:
+            try: source_paths.append(json.loads(item).get('path',''))
+            except (TypeError,ValueError): pass
+        source_paths=[path for path in dict.fromkeys(source_paths) if path]
+        target=str(structured.get('target_file','')).strip()
+        smallest=str(structured.get('smallest_edit','')).strip()
+        expected=str(structured.get('expected_effect','')).strip()
+        hypothesis=str(structured.get('hypothesis','')).strip() or note.strip()
+        if not target and len(source_paths)==1 and 'no safe edit target' not in hypothesis.lower(): target=source_paths[0]
+        if not smallest and target and 'no safe edit target' not in hypothesis.lower(): smallest=hypothesis
+        if not expected and target and 'no safe edit target' not in hypothesis.lower(): expected=hypothesis
         usage=response.get('usage',{})
         state['prompt_tokens']+=usage.get('prompt_tokens',0)
         state['completion_tokens']+=usage.get('completion_tokens',0)
@@ -435,20 +462,27 @@ def _run_agent(m,project,task,resume=None):
         state['reflections_this_generation']=state.get('reflections_this_generation',0)+1
         state['failed_verification_discovery_calls']=0
         state['force_reflection']=False
-        state['hypothesis']=note[:1800]
-        state['hypothesis_ready']=bool(note.strip())
+        state['hypothesis']=hypothesis[:1800]
+        state['hypothesis_target_file']=target[:500]
+        state['hypothesis_expected_effect']=expected[:900]
+        state['hypothesis_smallest_edit']=smallest[:900]
+        state['hypothesis_ready']=bool(hypothesis)
         # A resume-triggered reflection is only scheduled for an unedited failed
         # verification. Keep that experiment gate even if an old checkpoint has
         # incomplete status fields after migration.
-        state['experiment_required']=bool(note.strip() and
-                                          (verification_failed() or reason.startswith('resume with unedited failed verification')))
+        failed_context=verification_failed() or reason.startswith('resume with unedited failed verification')
+        state['experiment_required']=bool(failed_context and target and smallest and expected)
+        state['targeted_discovery_required']=bool(failed_context and not state['experiment_required'])
+        state['targeted_discovery_calls']=0
         state['discovery_after_hypothesis']=0
         state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
         state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
                               'Use discovery only for one exact missing fact needed to identify that edit; otherwise report a blocker.'
                               if state['experiment_required'] else
-                              'Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.')
-        record({'reflection':note,'reason':reason,'usage':usage})
+                              ('Targeted read required: read only the exact source range needed to identify a safe edit, then re-evaluate; otherwise report a blocker.'
+                               if state['targeted_discovery_required'] else
+                               'Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.'))
+        record({'reflection':note,'structured':structured,'reason':reason,'usage':usage})
         print('[hypothesis] saved evidence-based plan',flush=True)
         save()
     def verify_now():
@@ -506,7 +540,17 @@ Never claim a test passed without a successful tool result. If blocked state the
     ])
     if project.cfg.get('task_mode')=='inspect':
         definitions=[tool for tool in definitions if tool['function']['name']!='test_project']
-    allowed_names={tool['function']['name'] for tool in definitions}
+    all_allowed_names={tool['function']['name'] for tool in definitions}
+    discovery_names={'read_file','search_text','list_files','git_status','git_diff'}
+    experiment_core={'replace_text','write_file','run_command','build_project','test_project','update_working_state','finish_task'}
+    def active_definitions():
+        if state.get('experiment_required'):
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
+            return [tool for tool in definitions if tool['function']['name'] in names]
+        if state.get('targeted_discovery_required'):
+            names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<1 else set())
+            return [tool for tool in definitions if tool['function']['name'] in names]
+        return definitions
     save()
     try:
         if (edited and resume) or (project.cfg.get('initial_verify') and project.cfg.get('task_mode')!='inspect'):
@@ -533,7 +577,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                 user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Prefer the smallest safe replace_text/write_file edit followed by build/test. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, use update_working_state to state the missing fact and finish with a blocked report.'
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
             messages.extend(recent)
-            payload={'model':model,'messages':messages,'tools':definitions,'tool_choice':'auto',
+            current_definitions=active_definitions()
+            current_allowed_names={tool['function']['name'] for tool in current_definitions}
+            payload={'model':model,'messages':messages,'tools':current_definitions,'tool_choice':'auto',
                      'temperature':0.2,'max_tokens':1400,'chat_template_kwargs':{'enable_thinking':False}}
             if edited and verification and diff_seen:
                 payload.pop('tools'); payload.pop('tool_choice')
@@ -600,6 +646,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 key=str(state['generation'])+':'+signature
                 readonly=fn in ('read_file','search_text','list_files','git_status','git_diff')
                 experiment_budget_exhausted=False
+                tool_gate_violation=False
                 if readonly and state.get('experiment_required') and not edited:
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
                     if state['discovery_after_hypothesis']>=3:
@@ -616,8 +663,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                     repeats[key]=repeats.get(key,0)+1
                     state['pending_tool']={'name':fn,'args':args}
                     save()
-                    if fn not in allowed_names:
+                    if fn not in current_allowed_names:
                         result='exit=126\nTool is not enabled for this task mode'
+                        tool_gate_violation=bool(state.get('experiment_required') or state.get('targeted_discovery_required'))
                     elif repeats[key]>2 and fn!='update_working_state':
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
@@ -662,6 +710,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['experiment_required']=False
                     state['discovery_after_hypothesis']=0
                     state['hypothesis_generation']=None
+                    state['hypothesis_target_file']=''
+                    state['hypothesis_expected_effect']=''
+                    state['hypothesis_smallest_edit']=''
+                    state['targeted_discovery_required']=False
+                    state['targeted_discovery_calls']=0
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run build_project and test_project, repair errors, inspect git_diff, then report. Do not reread unchanged files.'
                 if fn=='build_project': state['build_status']=result[:800]
@@ -690,10 +743,19 @@ Never claim a test passed without a successful tool result. If blocked state the
                         state['status']='blocked'
                         state['next_action']='Failed verification remained unresolved after bounded discovery and two evidence reviews; checkpoint saved for human review.'
                         save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
+                if fn=='read_file' and state.get('targeted_discovery_required') and success:
+                    state['targeted_discovery_calls']=state.get('targeted_discovery_calls',0)+1
+                    state['targeted_discovery_required']=False
+                    state['force_reflection']=True
+                    state['next_action']='Targeted evidence was read; re-evaluate for an actionable minimal experiment before further tools.'
                 if experiment_budget_exhausted:
                     state['status']='blocked'
                     state['next_action']='Evidence-based hypothesis was ready, but no edit followed within the bounded discovery allowance; checkpoint saved.'
                     save(); print('[blocked] experiment discovery budget reached; checkpoint saved',flush=True); return 2
+                if tool_gate_violation:
+                    state['status']='blocked'
+                    state['next_action']='A tool outside the current safe experiment gate was requested; checkpoint saved without an edit.'
+                    save(); print('[blocked] experiment tool gate rejected unavailable tool; checkpoint saved',flush=True); return 2
                 summary=result if len(result)<=850 else result[:200]+'\n...\n'+result[-600:]
                 state['supporting_evidence']=(str(state['supporting_evidence'])+'\n'+fn+': '+summary)[-2400:]
                 bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})
