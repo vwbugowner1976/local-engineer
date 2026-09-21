@@ -338,6 +338,7 @@ def _run_agent(m,project,task,resume=None):
            'discovery_after_hypothesis':0,'hypothesis_generation':None,
            'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
            'targeted_discovery_required':False,'targeted_discovery_calls':0,
+           'experiment_state_updates':0,
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
     if resume:
@@ -351,6 +352,7 @@ def _run_agent(m,project,task,resume=None):
                             'discovery_after_hypothesis':0,'hypothesis_generation':None,
                             'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
                             'targeted_discovery_required':False,'targeted_discovery_calls':0,
+                            'experiment_state_updates':0,
                             'reflections_this_generation':0,
                             'failed_verification_discovery_calls':0}.items():
             state.setdefault(key,default)
@@ -371,6 +373,7 @@ def _run_agent(m,project,task,resume=None):
             state['discovery_after_hypothesis']=0
             state['targeted_discovery_required']=False
             state['targeted_discovery_calls']=0
+            state['experiment_state_updates']=0
             state['next_action']='Re-evaluate the prior hypothesis against the failed verification before further discovery.'
         prior_reads=[key for key in old.get('cache',{}) if ':read_file:' in key][-3:]
         task=state['objective']
@@ -474,6 +477,7 @@ def _run_agent(m,project,task,resume=None):
         state['experiment_required']=bool(failed_context and target and smallest and expected)
         state['targeted_discovery_required']=bool(failed_context and not state['experiment_required'])
         state['targeted_discovery_calls']=0
+        state['experiment_state_updates']=0
         state['discovery_after_hypothesis']=0
         state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
         state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
@@ -540,9 +544,7 @@ Never claim a test passed without a successful tool result. If blocked state the
     ])
     if project.cfg.get('task_mode')=='inspect':
         definitions=[tool for tool in definitions if tool['function']['name']!='test_project']
-    all_allowed_names={tool['function']['name'] for tool in definitions}
-    discovery_names={'read_file','search_text','list_files','git_status','git_diff'}
-    experiment_core={'replace_text','write_file','run_command','build_project','test_project','update_working_state','finish_task'}
+    experiment_core={'replace_text','write_file','build_project','test_project','update_working_state','finish_task'}
     def active_definitions():
         if state.get('experiment_required'):
             names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
@@ -669,10 +671,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                     elif repeats[key]>2 and fn!='update_working_state':
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
-                        for k,v in args.items():
-                            if k in ('hypothesis','supporting_evidence','remaining_tasks','next_action'):
-                                state[k]=str(v)[:900]
-                        result='exit=0\nworking state saved'
+                        if state.get('experiment_required'):
+                            state['experiment_state_updates']=state.get('experiment_state_updates',0)+1
+                        if state.get('experiment_required') and state['experiment_state_updates']>2:
+                            result='exit=125\nExperiment state-update budget exhausted; make an edit, run registered verification, or finish with a specific blocker.'
+                        else:
+                            for k,v in args.items():
+                                if k in ('hypothesis','supporting_evidence','remaining_tasks','next_action'):
+                                    state[k]=str(v)[:900]
+                            result='exit=0\nworking state saved'
                     elif fn=='test_project':
                         command=project.cfg.get('test')
                         rc,out=project.command(command,900) if command else (126,'No test command registered; inspect README')
@@ -715,6 +722,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['hypothesis_smallest_edit']=''
                     state['targeted_discovery_required']=False
                     state['targeted_discovery_calls']=0
+                    state['experiment_state_updates']=0
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run build_project and test_project, repair errors, inspect git_diff, then report. Do not reread unchanged files.'
                 if fn=='build_project': state['build_status']=result[:800]
@@ -756,6 +764,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['status']='blocked'
                     state['next_action']='A tool outside the current safe experiment gate was requested; checkpoint saved without an edit.'
                     save(); print('[blocked] experiment tool gate rejected unavailable tool; checkpoint saved',flush=True); return 2
+                if fn=='update_working_state' and state.get('experiment_required') and state.get('experiment_state_updates',0)>2:
+                    state['status']='blocked'
+                    state['next_action']='Experiment state updates repeated without an edit or registered verification; checkpoint saved.'
+                    save(); print('[blocked] experiment state-update budget reached; checkpoint saved',flush=True); return 2
                 summary=result if len(result)<=850 else result[:200]+'\n...\n'+result[-600:]
                 state['supporting_evidence']=(str(state['supporting_evidence'])+'\n'+fn+': '+summary)[-2400:]
                 bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})

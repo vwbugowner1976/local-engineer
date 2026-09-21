@@ -232,6 +232,7 @@ class SafetyTests(unittest.TestCase):
                 return tool('read_file',{'path':'calc.py','start_line':1,'end_line':1})
             self.assertNotIn('read_file',names)
             self.assertFalse({'search_text','list_files'} & names)
+            self.assertNotIn('run_command',names)
             self.assertIn('replace_text',names)
             self.assertIn('test_project',names)
             return tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
@@ -240,6 +241,25 @@ class SafetyTests(unittest.TestCase):
              patch.object(m,'get_json',side_effect=lambda url,payload,timeout=600: final if len(seen)>=3 and 'tools' not in payload and payload['messages'][0]['content'].startswith('Report') else api(url,payload,timeout)):
             self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
         self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
+
+    def test_experiment_state_updates_cannot_extend_the_gate_indefinitely(self):
+        (self.root/'calc.py').write_text('value = 0\n')
+        checkpoint=self.root/'resume-updates.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+            'build_status':'exit=0\\nbuild ok','test_status':'exit=1\\nactual 0 expected 2',
+            'cache':{'0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace 0 with 2','missing_evidence':''})}}]}
+        update=tool('update_working_state',{'next_action':'still considering the same edit'})
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=[reflection,update,update,update]):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),2)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['experiment_state_updates'],3)
+        self.assertEqual(state['files_modified'],[])
+        self.assertEqual(state['status'],'blocked')
 
     def test_resume_stale_hypothesis_is_reflected_again(self):
         (self.root/'calc.py').write_text('value = 0\n')
@@ -282,6 +302,7 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(state['failed_verification_discovery_calls'],0)
         self.assertFalse(state['experiment_required'])
         self.assertEqual(state['discovery_after_hypothesis'],0)
+        self.assertEqual(state['experiment_state_updates'],0)
         self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
 
     def test_stalled_discovery_gets_one_evidence_plan_then_repairs(self):
