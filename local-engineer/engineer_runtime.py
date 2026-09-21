@@ -334,6 +334,8 @@ def _run_agent(m,project,task,resume=None):
            'rounds':0,'tool_calls':0,'cache_hits':0,'generation':0,'cache':{},
            'reflection_calls':0,'reflections_this_generation':0,
            'failed_verification_discovery_calls':0,'force_reflection':False,
+           'hypothesis_ready':False,'experiment_required':False,
+           'discovery_after_hypothesis':0,'hypothesis_generation':None,
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
     if resume:
@@ -343,6 +345,11 @@ def _run_agent(m,project,task,resume=None):
         if (expected_root,old['branch'],old['project']) != (actual_root,facts['branch'],project.name):
             raise RuntimeError('checkpoint repo/branch mismatch')
         state.update(old)
+        for key,default in {'hypothesis_ready':False,'experiment_required':False,
+                            'discovery_after_hypothesis':0,'hypothesis_generation':None,
+                            'reflections_this_generation':0,
+                            'failed_verification_discovery_calls':0}.items():
+            state.setdefault(key,default)
         state['root']=project.root
         state['known_facts']=facts
         state['cache']={}  # Disk may have changed while the agent was away.
@@ -355,6 +362,9 @@ def _run_agent(m,project,task,resume=None):
         state['failed_verification_discovery_calls']=0
         state['force_reflection']=bool(failed_before_resume and not state.get('files_modified'))
         if state['force_reflection']:
+            state['hypothesis_ready']=False
+            state['experiment_required']=False
+            state['discovery_after_hypothesis']=0
             state['next_action']='Re-evaluate the prior hypothesis against the failed verification before further discovery.'
         prior_reads=[key for key in old.get('cache',{}) if ':read_file:' in key][-3:]
         task=state['objective']
@@ -426,7 +436,18 @@ def _run_agent(m,project,task,resume=None):
         state['failed_verification_discovery_calls']=0
         state['force_reflection']=False
         state['hypothesis']=note[:1800]
-        state['next_action']='Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.'
+        state['hypothesis_ready']=bool(note.strip())
+        # A resume-triggered reflection is only scheduled for an unedited failed
+        # verification. Keep that experiment gate even if an old checkpoint has
+        # incomplete status fields after migration.
+        state['experiment_required']=bool(note.strip() and
+                                          (verification_failed() or reason.startswith('resume with unedited failed verification')))
+        state['discovery_after_hypothesis']=0
+        state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
+        state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
+                              'Use discovery only for one exact missing fact needed to identify that edit; otherwise report a blocker.'
+                              if state['experiment_required'] else
+                              'Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.')
         record({'reflection':note,'reason':reason,'usage':usage})
         print('[hypothesis] saved evidence-based plan',flush=True)
         save()
@@ -508,6 +529,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     reflect('failed verification remained unresolved after bounded discovery')
             compact={k:v for k,v in state.items() if k not in ('cache','project_config','known_facts')}
             user=task+'\nGit preflight: '+json.dumps(facts)+'\nRegistry: '+json.dumps(project.cfg)+'\nMemory hints (verify): '+json.dumps(memory)[:1800]+'\nWorking state: '+json.dumps(compact,ensure_ascii=False)[:6500]
+            if state.get('experiment_required'):
+                user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Prefer the smallest safe replace_text/write_file edit followed by build/test. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, use update_working_state to state the missing fact and finish with a blocked report.'
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
             messages.extend(recent)
             payload={'model':model,'messages':messages,'tools':definitions,'tool_choice':'auto',
@@ -576,7 +599,16 @@ Never claim a test passed without a successful tool result. If blocked state the
                 signature=fn+':'+json.dumps(args,sort_keys=True)
                 key=str(state['generation'])+':'+signature
                 readonly=fn in ('read_file','search_text','list_files','git_status','git_diff')
-                if readonly and key in state['cache']:
+                experiment_budget_exhausted=False
+                if readonly and state.get('experiment_required') and not edited:
+                    state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
+                    if state['discovery_after_hypothesis']>=3:
+                        result=('exit=125\nExperiment required after an evidence-based hypothesis. Discovery budget is exhausted; '
+                                'make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
+                        experiment_budget_exhausted=True
+                if experiment_budget_exhausted:
+                    pass
+                elif readonly and key in state['cache']:
                     result=state['cache'][key]; state['cache_hits']+=1
                     repeats[key]=repeats.get(key,0)+1
                     result+='\n[CACHED: already inspected with no intervening change. Do not repeat this call. Use finish_task if the evidence answers the question, or investigate a different specific missing fact.]'
@@ -600,6 +632,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     else:
                         result=m.dispatch(project,fn,args)
                     if readonly: state['cache'][key]=result
+                if readonly and state.get('experiment_required') and not experiment_budget_exhausted:
+                    result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; only one more discovery call is available unless a specific missing fact prevents the edit.]'
                 state['tool_calls']+=1
                 state['pending_tool']=None
                 print('[tool %d] %s %s'%(state['rounds'],fn,result.splitlines()[0]),flush=True)
@@ -624,6 +658,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['reflections_this_generation']=0
                     state['failed_verification_discovery_calls']=0
                     state['force_reflection']=False
+                    state['hypothesis_ready']=False
+                    state['experiment_required']=False
+                    state['discovery_after_hypothesis']=0
+                    state['hypothesis_generation']=None
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run build_project and test_project, repair errors, inspect git_diff, then report. Do not reread unchanged files.'
                 if fn=='build_project': state['build_status']=result[:800]
@@ -652,6 +690,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                         state['status']='blocked'
                         state['next_action']='Failed verification remained unresolved after bounded discovery and two evidence reviews; checkpoint saved for human review.'
                         save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
+                if experiment_budget_exhausted:
+                    state['status']='blocked'
+                    state['next_action']='Evidence-based hypothesis was ready, but no edit followed within the bounded discovery allowance; checkpoint saved.'
+                    save(); print('[blocked] experiment discovery budget reached; checkpoint saved',flush=True); return 2
                 summary=result if len(result)<=850 else result[:200]+'\n...\n'+result[-600:]
                 state['supporting_evidence']=(str(state['supporting_evidence'])+'\n'+fn+': '+summary)[-2400:]
                 bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})

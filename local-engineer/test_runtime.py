@@ -143,11 +143,11 @@ class SafetyTests(unittest.TestCase):
              patch.object(self.project,'command',return_value=(1,"assertion: actual 'Saved' != expected 'Ready'")):
             self.assertEqual(m.agent(self.project,'repair failing peer selection'),2)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
-        self.assertEqual(state['reflections_this_generation'],2)
-        self.assertEqual(state['failed_verification_discovery_calls'],5)
+        self.assertEqual(state['reflections_this_generation'],1)
+        self.assertEqual(state['discovery_after_hypothesis'],3)
         self.assertEqual(state['status'],'blocked')
 
-    def test_second_reflection_can_replace_a_wrong_hypothesis_with_an_edit(self):
+    def test_hypothesis_gate_prefers_an_edit_after_initial_discovery(self):
         (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
         (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
         self.project.cfg['initial_verify']=True
@@ -156,10 +156,9 @@ class SafetyTests(unittest.TestCase):
             return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
         reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4,1)]
         wrong={'choices':[{'message':{'content':'The observed value is Saved, so preserve Saved.'}}]}
-        corrected={'choices':[{'message':{'content':'Actual is Saved; expected is Ready. Select the Ready value.'}}]}
         edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
         final={'choices':[{'message':{'content':'Result: corrected after test-evidence review.'}}]}
-        responses=reads[:3]+[wrong]+reads[3:]+[corrected,edit,final]
+        responses=reads[:3]+[wrong,edit,final]
         tests=iter([(1,"actual 'Saved' != expected 'Ready'"),(0,'test ok')])
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
              patch.object(m,'get_json',side_effect=responses), \
@@ -167,8 +166,47 @@ class SafetyTests(unittest.TestCase):
              patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
             self.assertEqual(m.agent(self.project,'repair'),0)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
-        self.assertEqual(state['reflection_calls'],2)
+        self.assertEqual(state['reflection_calls'],1)
         self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
+
+    def test_hypothesis_gate_warns_before_it_blocks_discovery(self):
+        (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\n')
+        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
+        self.project.cfg['initial_verify']=True
+        self.project.cfg['test']='registered-failing-test'
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,1)]
+        reflection={'choices':[{'message':{'content':'Actual is 0; expected is 2. Replace the arithmetic operator.'}}]}
+        edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
+        final={'choices':[{'message':{'content':'Result: experiment verified.'}}]}
+        tests=iter([(1,'actual 0, expected 2'),(0,'test ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=reads[:3]+[reflection,reads[3],edit,final]), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            self.assertEqual(m.agent(self.project,'repair'),0)
+        session=next((m.STATE/'sessions').glob('*/working_state.json')).parent
+        self.assertIn('EXPERIMENT REQUIRED', (session/'events.jsonl').read_text())
+
+    def test_unknown_edit_target_blocks_safely_after_hypothesis_budget(self):
+        (self.root/'source.py').write_text('unrelated = True\n')
+        self.project.cfg['initial_verify']=True
+        self.project.cfg['test']='registered-failing-test'
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        first=[tool('read_file',{'path':'source.py','start_line':1,'end_line':1}) for _ in range(3)]
+        searches=[tool('search_text',{'pattern':'missing%s'%n,'glob':'*.py'}) for n in range(3)]
+        reflection={'choices':[{'message':{'content':'The test fails, but no safe edit target is identified yet.'}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=first+[reflection]+searches), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(1,'expected behavior is unknown')):
+            self.assertEqual(m.agent(self.project,'repair'),2)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['status'],'blocked')
+        self.assertEqual(state['files_modified'],[])
+        self.assertTrue(state['experiment_required'])
 
     def test_resume_stale_hypothesis_is_reflected_again(self):
         (self.root/'calc.py').write_text('value = 0\n')
@@ -186,6 +224,9 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflection_calls'],2)
         self.assertFalse(state['force_reflection'])
+        self.assertTrue(state['hypothesis_ready'])
+        self.assertTrue(state['experiment_required'])
+        self.assertEqual(state['discovery_after_hypothesis'],0)
         self.assertIn('expected',state['hypothesis'])
 
     def test_evidence_supported_edit_resets_stall_budget(self):
@@ -206,6 +247,8 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflections_this_generation'],0)
         self.assertEqual(state['failed_verification_discovery_calls'],0)
+        self.assertFalse(state['experiment_required'])
+        self.assertEqual(state['discovery_after_hypothesis'],0)
         self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
 
     def test_stalled_discovery_gets_one_evidence_plan_then_repairs(self):
