@@ -70,11 +70,19 @@ def request_completion(m,payload):
     last_error=None
     for attempt in range(4):
         try:
-            return m.get_json(m.API_BASE+'/chat/completions',payload,timeout=600)
+            request=payload
+            if attempt>=2 and payload.get('max_tokens'):
+                request=dict(payload)
+                request['max_tokens']=min(int(payload['max_tokens']),700)
+            return m.get_json(m.API_BASE+'/chat/completions',request,timeout=600)
         except json.JSONDecodeError as error:
             last_error=error
             if attempt==3:
-                raise
+                # A truncated/malformed server JSON response must not abort the durable
+                # repair loop. Let the next round regenerate from the saved checkpoint.
+                return {'choices':[{'message':{'content':'','tool_calls':[]},
+                                   'finish_reason':'malformed_response'}],
+                        'usage':{}}
             time.sleep(attempt+1)
         except urllib.error.HTTPError as error:
             if error.code not in (429,500,502,503,504) or attempt==3:
