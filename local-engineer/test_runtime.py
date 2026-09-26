@@ -1,3 +1,4 @@
+from pathlib import Path
 import importlib.util
 import hashlib
 import json
@@ -325,8 +326,13 @@ class SafetyTests(unittest.TestCase):
         (self.root/'test_calc.py').write_text('import unittest\nclass TestCalc(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
         calls=[('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 1'}),
                ('replace_text',{'path':'calc.py','old':'value = 1','new':'value = 2'})]
-        responses=[{'choices':[{'message':{'tool_calls':[{'id':str(i),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]} for i,(name,args) in enumerate(calls)]
-        responses.append({'choices':[{'message':{'content':'Result: fixed and verified'}}]})
+        first_edit={'choices':[{'message':{'tool_calls':[{'id':'0','type':'function','function':{'name':calls[0][0],'arguments':json.dumps(calls[0][1])}}]}}]}
+        repair_reflection={'choices':[{'message':{'content':json.dumps({
+            'hypothesis':'first edit causes compiler error; use the follow-up value already identified by the task evidence',
+            'target_file':'calc.py','expected_effect':'build succeeds','smallest_edit':'replace value = 1 with value = 2',
+            'missing_evidence':'','targeted_reads':[]})}}]}
+        second_edit={'choices':[{'message':{'tool_calls':[{'id':'1','type':'function','function':{'name':calls[1][0],'arguments':json.dumps(calls[1][1])}}]}}]}
+        responses=[first_edit,repair_reflection,second_edit,{'choices':[{'message':{'content':'Result: fixed and verified'}}]}]
         builds=iter([(1,'compiler error'),(0,'build ok')])
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=responses), patch.object(self.project,'build',side_effect=lambda extra='':next(builds)):
             self.assertEqual(m.agent(self.project,'fix'),0)
@@ -341,5 +347,240 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(m.agent(self.project,'ignored',str(checkpoints[0])),2)
         newest=max((m.STATE/'sessions').glob('*/working_state.json'),key=lambda p:p.stat().st_mtime)
         self.assertEqual(json.loads(newest.read_text())['objective'],'fix')
+
+
+    def test_post_edit_failure_enters_closed_repair_and_reedits(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        old_backup=self.root/'old-backup'; old_backup.mkdir(); (old_backup/'calc.py').write_text('value = 0\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'post-edit.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair value','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'value 0 should become 1','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nAssertionError: actual 1 expected 2','generation':1,'cache':{}}))
+        seen=[]
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(len(seen)),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        def api(url,payload,timeout=600):
+            if 'tools' not in payload:
+                system=payload['messages'][0]['content']
+                if system.startswith('Report'):
+                    return {'choices':[{'message':{'content':'Result: repaired and verified.'}}]}
+                self.assertIn('refining a failed code edit',system)
+                body=payload['messages'][1]['content']
+                self.assertIn('previous_hypothesis',body)
+                self.assertIn('current_diff',body)
+                self.assertIn('actual 1 expected 2',body)
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'the first edit changed the value but stopped at 1',
+                    'target_file':'calc.py','expected_effect':'value becomes 2',
+                    'smallest_edit':'replace value = 1 with value = 2','missing_evidence':'','targeted_reads':[]})}}]}
+            names={entry['function']['name'] for entry in payload['tools']}; seen.append(names)
+            self.assertFalse({'search_text','list_files','run_command'} & names)
+            self.assertIn('replace_text',names); self.assertIn('test_project',names)
+            return tool('replace_text',{'path':'calc.py','old':'value = 1','new':'value = 2'})
+        tests=iter([(1,'AssertionError: actual 1 expected 2'),(0,'test ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
+        self.assertEqual(state['repair_attempts'],1)
+        self.assertEqual(state['verification_failure_class'],'')
+        self.assertEqual(state['phase'],'normal')
+        self.assertTrue(seen)
+
+    def test_post_edit_repair_rejects_unrelated_read(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        (self.root/'unrelated.py').write_text('secret_of_bug = False\n')
+        old_backup=self.root/'old-backup'; old_backup.mkdir(); (old_backup/'calc.py').write_text('value = 0\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'repair-read.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'first edit','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nactual 1 expected 2','generation':1,'cache':{},'files_inspected':['calc.py']}))
+        calls=[]
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(len(calls)),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        def api(url,payload,timeout=600):
+            if 'tools' not in payload:
+                if payload['messages'][0]['content'].startswith('Report'):
+                    return {'choices':[{'message':{'content':'blocked'}}]}
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'need one exact source fact','target_file':'','expected_effect':'','smallest_edit':'',
+                    'missing_evidence':'inspect changed line','targeted_reads':['unrelated.py']})}}]}
+            calls.append({entry['function']['name'] for entry in payload['tools']})
+            if len(calls)==1:
+                return tool('read_file',{'path':'unrelated.py','start_line':1,'end_line':1})
+            return tool('finish_task',{'report':'blocked after rejected unrelated read'})
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(1,'actual 1 expected 2')):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),2)
+        events=next((m.STATE/'sessions').glob('*/events.jsonl')).read_text()
+        self.assertIn('POST_EDIT_REPAIR read rejected',events)
+        self.assertNotIn('secret_of_bug',events)
+
+    def test_post_edit_repair_targeted_read_budget_is_two(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\nmore = 0\n')
+        old_backup=self.root/'old-backup'; old_backup.mkdir(); (old_backup/'calc.py').write_text('value = 0\nmore = 0\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'repair-budget.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'first edit','build_status':'exit=0\nbuild ok','test_status':'exit=1\nactual 1 expected 2',
+            'generation':1,'cache':{},'files_inspected':['calc.py']}))
+        schemas=[]; reflections=0
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(len(schemas)),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        def api(url,payload,timeout=600):
+            nonlocal reflections
+            if 'tools' not in payload:
+                if payload['messages'][0]['content'].startswith('Report'):
+                    return {'choices':[{'message':{'content':'Result: verified.'}}]}
+                reflections+=1
+                if reflections<3:
+                    return {'choices':[{'message':{'content':json.dumps({
+                        'hypothesis':'need changed file context','target_file':'','expected_effect':'','smallest_edit':'',
+                        'missing_evidence':'calc line','targeted_reads':['calc.py']})}}]}
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'two reads show value must be 2','target_file':'calc.py','expected_effect':'value becomes 2',
+                    'smallest_edit':'replace value 1 with 2','missing_evidence':'','targeted_reads':[]})}}]}
+            names={entry['function']['name'] for entry in payload['tools']}; schemas.append(names)
+            if len(schemas)<=2:
+                self.assertIn('read_file',names)
+                return tool('read_file',{'path':'calc.py','start_line':len(schemas),'end_line':len(schemas)})
+            self.assertNotIn('read_file',names)
+            return tool('replace_text',{'path':'calc.py','old':'value = 1','new':'value = 2'})
+        tests=iter([(1,'actual 1 expected 2'),(0,'ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['repair_targeted_reads_used'],2)
+        self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
+
+    def test_post_edit_repair_absolute_read_path_is_rejected_not_crashing(self):
+        # Absolute paths are invalid in the repair phase; reject them as tool errors.
+        # The agent must continue instead of aborting with ValueError.
+        state_path = self.root/'absolute-read.json'
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        state_path.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(self.root/'backup'),
+            'hypothesis':'first edit','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nactual 1 expected 2','generation':1}))
+        responses=[
+            {'choices':[{'message':{'content':json.dumps({
+                'hypothesis':'inspect changed file','target_file':'calc.py',
+                'expected_effect':'understand failure','smallest_edit':'','missing_evidence':'read file',
+                'targeted_reads':['calc.py']})}}]},
+            {'choices':[{'message':{'tool_calls':[{'id':'read1','type':'function',
+                'function':{'name':'read_file','arguments':json.dumps({'path':str(self.root/'calc.py')})}}]}}]},
+            {'choices':[{'message':{'content':'blocked'}}]}
+        ]
+        def api(*args,**kwargs):
+            return responses.pop(0)
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'),              patch.object(m,'get_json',side_effect=api),              patch.object(self.project,'build',return_value=(0,'build ok')),              patch.object(self.project,'command',return_value=(1,'actual 1 expected 2')):
+            result=m.agent(self.project,'ignored',str(state_path))
+        self.assertIn(result,(1,2))
+
+    def test_post_edit_repair_cached_read_cannot_bypass_budget_or_state_update_gate(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        old_backup=self.root/'old-backup'; old_backup.mkdir(); (old_backup/'calc.py').write_text('value = 0\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'repair-cached-read.json'
+        cached_key='1:read_file:'+json.dumps({'path':'calc.py','start_line':1,'end_line':20},sort_keys=True)
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'first edit','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nactual 1 expected 2','generation':1,
+            'cache':{cached_key:'exit=0\nvalue = 1\n'},'files_inspected':['calc.py']}))
+        schemas=[]; events=[]
+
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(len(schemas)),'type':'function',
+                'function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+
+        def api(url,payload,timeout=600):
+            if 'tools' not in payload:
+                if payload['messages'][0]['content'].startswith('Report'):
+                    return {'choices':[{'message':{'content':'blocked'}}]}
+                # Reflection must receive the cached targeted evidence.
+                user_json=payload['messages'][1]['content']
+                self.assertIn('cached_targeted_evidence',user_json)
+                self.assertIn('value = 1',user_json)
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'need one exact changed-file fact','target_file':'','expected_effect':'',
+                    'smallest_edit':'','missing_evidence':'inspect changed line','targeted_reads':['calc.py']})}}]}
+            schemas.append({entry['function']['name'] for entry in payload['tools']})
+            if len(schemas)==1:
+                self.assertNotIn('update_working_state',schemas[-1])
+                return tool('read_file',{'path':'calc.py','start_line':1,'end_line':20})
+            return tool('finish_task',{'report':'blocked after cached read rejection'})
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(1,'actual 1 expected 2')):
+            result=m.agent(self.project,'ignored',str(checkpoint))
+            self.assertEqual(result,2)
+
+        events_text=next((m.STATE/'sessions').glob('*/events.jsonl')).read_text()
+        self.assertIn('cached read already supplied',events_text)
+
+    def test_post_edit_failure_classifies_unchanged_target(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        old_backup=self.root/'old-backup'; old_backup.mkdir(); (old_backup/'calc.py').write_text('value = 0\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'unchanged.json'
+        failure='exit=1\nAssertionError: actual Saved expected Ready'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'prior','build_status':'exit=0\nbuild ok','test_status':failure,'generation':1,'cache':{}}))
+        captured=[]
+        def api(url,payload,timeout=600):
+            if 'tools' not in payload:
+                captured.append(payload['messages'][1]['content'])
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'still wrong','target_file':'','expected_effect':'','smallest_edit':'',
+                    'missing_evidence':'none','targeted_reads':[]})}}]}
+            return {'choices':[{'message':{'tool_calls':[{'id':'done','type':'function','function':{'name':'finish_task','arguments':json.dumps({'report':'blocked'})}}]}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(1,'AssertionError: actual Saved expected Ready')):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),2)
+        self.assertTrue(any('UNCHANGED_TARGET_FAILURE' in body for body in captured))
+
+    def test_post_edit_repair_git_diff_cannot_repeat_before_followup_edit(self):
+        runtime = Path(__file__).with_name("engineer_runtime_post_edit_v6.py").read_text()
+        self.assertIn("POST_EDIT_REPAIR git_diff already supplied as repair evidence", runtime)
+        self.assertIn("state['repair_git_diff_used']=0", runtime)
+        self.assertIn("state['repair_git_diff_used']=state.get('repair_git_diff_used',0)+1", runtime)
+
+    def test_post_edit_repair_rejected_edit_locks_git_diff_until_successful_edit(self):
+        runtime = Path(__file__).with_name("engineer_runtime_post_edit_v6.py").read_text()
+        self.assertIn("state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>=1", runtime)
+        self.assertIn("state['repair_edit_failures']=state.get('repair_edit_failures',0)+1", runtime)
+        self.assertIn("Two post-edit repair edits were rejected without a successful change", runtime)
 
 if __name__=='__main__': unittest.main()
