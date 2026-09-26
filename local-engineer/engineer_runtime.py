@@ -963,11 +963,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                 success=result.startswith('exit=0')
                 if fn in ('write_file','replace_text') and not success and state.get('phase')=='post_edit_repair':
                     state['repair_edit_failures']=state.get('repair_edit_failures',0)+1
-                     state['repair_force_reflection']=True
-                     state['repair_failed_edit']={'tool':fn,'path':args.get('path',''),
-                         'result':result[:1200],
-                         'old':str(args.get('old',''))[:1200],
-                         'new':str(args.get('new',''))[:1200]}
+                    state['repair_force_reflection']=True
+                    state['repair_failed_edit']={'tool':fn,'path':args.get('path',''),
+                        'result':result[:1200],
+                        'old':str(args.get('old',''))[:1200],
+                        'new':str(args.get('new',''))[:1200]}
                     state['next_action']='Repair edit was rejected. Do not request git_diff again. Use a project-relative path and prefer the smallest replace_text edit; then build/test.'
                     if state['repair_edit_failures']>=2:
                         state['status']='blocked'
