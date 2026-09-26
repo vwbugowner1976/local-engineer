@@ -366,6 +366,7 @@ def _run_agent(m,project,task,resume=None):
            'repair_targeted_reads_used':0,'repair_max_targeted_reads':2,
            'repair_allowed_reads':[],'repair_previous_hypothesis':'','repair_last_edit':{},
            'repair_previous_build_status':'','repair_previous_test_status':'',
+           'repair_current_diff':'','repair_failed_edit':{},
            'verification_failure_class':'','repair_reopen_reason':'','repair_force_reflection':False,
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
@@ -387,6 +388,7 @@ def _run_agent(m,project,task,resume=None):
                             'repair_targeted_reads_used':0,'repair_max_targeted_reads':2,
                             'repair_allowed_reads':[],'repair_previous_hypothesis':'','repair_last_edit':{},
                             'repair_previous_build_status':'','repair_previous_test_status':'',
+                            'repair_current_diff':'','repair_failed_edit':{},
                             'verification_failure_class':'','repair_reopen_reason':'','repair_force_reflection':False}.items():
             state.setdefault(key,default)
         state['root']=project.root
@@ -526,10 +528,15 @@ def _run_agent(m,project,task,resume=None):
         state['next_action']='Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.'
     def reflect_post_edit(reason='post-edit verification failure'):
         if state.get('phase')!='post_edit_repair': return
-        diff=m.dispatch(project,'git_diff',{})
-        state['tool_calls']+=1
-        record({'tool':'git_diff','args':{},'result':diff,'automatic':True,'repair_evidence':True})
-        state['repair_git_diff_used']=state.get('repair_git_diff_used',0)+1
+        # Capture git_diff once per repair cycle. A rejected edit leaves the tree unchanged,
+        # so re-running git_diff only feeds the same evidence back into the loop.
+        diff=state.get('repair_current_diff','')
+        if not diff:
+            diff=m.dispatch(project,'git_diff',{})
+            state['tool_calls']+=1
+            record({'tool':'git_diff','args':{},'result':diff,'automatic':True,'repair_evidence':True})
+            state['repair_git_diff_used']=state.get('repair_git_diff_used',0)+1
+            state['repair_current_diff']=diff
         previous_hypothesis=state.get('repair_previous_hypothesis') or state.get('hypothesis','')
         cached_targeted_evidence={}
         for key,value in state.get('cache',{}).items():
@@ -553,6 +560,7 @@ def _run_agent(m,project,task,resume=None):
                                 'previous_test':state.get('repair_previous_test_status',''),
                                 'current_build':state.get('build_status',''),
                                 'current_test':state.get('test_status',''),
+                                'failed_edit':state.get('repair_failed_edit',{}),
                                 'cached_targeted_evidence':cached_targeted_evidence},ensure_ascii=False)[:14500]}]}
         tokens=measure_tokens(m,prompt)
         if tokens+prompt['max_tokens']+256>int(project.cfg.get('context_length',8192)): return
@@ -740,6 +748,8 @@ Never claim a test passed without a successful tool result. If blocked state the
     def active_definitions():
         if state.get('phase')=='post_edit_repair':
             names=set(repair_core)
+            if state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>0:
+                names.discard('git_diff')
             if state.get('repair_targeted_reads_used',0) < state.get('repair_max_targeted_reads',2) and state.get('repair_allowed_reads'):
                 names.add('read_file')
             return [tool for tool in definitions if tool['function']['name'] in names]
@@ -953,6 +963,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                 success=result.startswith('exit=0')
                 if fn in ('write_file','replace_text') and not success and state.get('phase')=='post_edit_repair':
                     state['repair_edit_failures']=state.get('repair_edit_failures',0)+1
+                     state['repair_force_reflection']=True
+                     state['repair_failed_edit']={'tool':fn,'path':args.get('path',''),
+                         'result':result[:1200],
+                         'old':str(args.get('old',''))[:1200],
+                         'new':str(args.get('new',''))[:1200]}
                     state['next_action']='Repair edit was rejected. Do not request git_diff again. Use a project-relative path and prefer the smallest replace_text edit; then build/test.'
                     if state['repair_edit_failures']>=2:
                         state['status']='blocked'
@@ -984,6 +999,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['repair_force_reflection']=False
                     state['repair_git_diff_used']=0
                     state['repair_edit_failures']=0
+                     state['repair_current_diff']=''
+                     state['repair_failed_edit']={}
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run registered build/test immediately. If verification fails, refine this edit in POST_EDIT_REPAIR rather than restarting discovery.'
                 if fn=='build_project': state['build_status']=result[:800]
