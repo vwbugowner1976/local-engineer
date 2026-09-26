@@ -578,7 +578,7 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("state['repair_git_diff_used']=state.get('repair_git_diff_used',0)+1", runtime)
 
     def test_post_edit_repair_rejected_edit_locks_git_diff_until_successful_edit(self):
-        runtime = Path(__file__).with_name("engineer_runtime_post_edit_v6.py").read_text()
+        runtime = Path(__file__).with_name("engineer_runtime.py").read_text()
         self.assertIn("state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>0", runtime)
         self.assertIn("state['repair_edit_failures']=state.get('repair_edit_failures',0)+1", runtime)
         self.assertIn("state['repair_force_reflection']=True", runtime)
