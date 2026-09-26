@@ -572,7 +572,7 @@ class SafetyTests(unittest.TestCase):
         self.assertTrue(any('UNCHANGED_TARGET_FAILURE' in body for body in captured))
 
     def test_post_edit_repair_git_diff_cannot_repeat_before_followup_edit(self):
-        runtime = Path(__file__).with_name("engineer_runtime_post_edit_v6.py").read_text()
+        runtime = Path(__file__).with_name("engineer_runtime.py").read_text()
         self.assertIn("POST_EDIT_REPAIR git_diff already supplied as repair evidence", runtime)
         self.assertIn("state['repair_git_diff_used']=0", runtime)
         self.assertIn("state['repair_git_diff_used']=state.get('repair_git_diff_used',0)+1", runtime)
