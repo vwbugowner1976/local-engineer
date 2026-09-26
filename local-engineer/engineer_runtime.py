@@ -67,14 +67,24 @@ def measure_tokens(m,payload):
 
 
 def request_completion(m,payload):
-    for attempt in range(3):
+    last_error=None
+    for attempt in range(4):
         try:
             return m.get_json(m.API_BASE+'/chat/completions',payload,timeout=600)
+        except json.JSONDecodeError as error:
+            last_error=error
+            if attempt==3:
+                raise
+            time.sleep(attempt+1)
         except urllib.error.HTTPError as error:
-            if error.code not in (429,500,502,503,504) or attempt==2: raise
+            if error.code not in (429,500,502,503,504) or attempt==3:
+                raise
+            time.sleep(attempt+1)
         except (urllib.error.URLError,socket.timeout,ConnectionError):
-            if attempt==2: raise
-        time.sleep(attempt+1)
+            if attempt==3:
+                raise
+            time.sleep(attempt+1)
+    raise last_error
 
 
 def install(m):
@@ -826,7 +836,30 @@ Never claim a test passed without a successful tool result. If blocked state the
             edited_this_round=False
             for call in calls:
                 fn=call['function']['name']
-                args=json.loads(call['function'].get('arguments') or '{}')
+                raw_args=call['function'].get('arguments') or '{}'
+                try:
+                    args=json.loads(raw_args)
+                    if not isinstance(args,dict):
+                        raise ValueError('tool arguments must be a JSON object')
+                except (json.JSONDecodeError, TypeError, ValueError) as error:
+                    args={}
+                    result='exit=125\\nMalformed tool arguments rejected: '+repr(error)
+                    state['failed_attempts']=(state['failed_attempts']+[
+                        fn+': malformed tool arguments: '+repr(error)
+                    ])[-5:]
+                    state['next_action']='The previous tool call had malformed JSON arguments. Retry the same intent with compact valid JSON; do not repeat unrelated discovery.'
+                    state['tool_calls']+=1
+                    state['pending_tool']=None
+                    print('[tool %d] %s %s'%(state['rounds'],fn,result.splitlines()[0]),flush=True)
+                    record({'tool':fn,'args':args,'raw_arguments':raw_args[:2000],
+                            'result':result,'generation':state['generation']})
+                    bundle.append({
+                        'role':'tool',
+                        'tool_call_id':call['id'],
+                        'content':result
+                    })
+                    save()
+                    continue
                 signature=fn+':'+json.dumps(args,sort_keys=True)
                 key=str(state['generation'])+':'+signature
                 readonly=fn in ('read_file','search_text','list_files','git_status','git_diff')
