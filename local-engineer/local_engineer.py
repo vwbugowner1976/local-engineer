@@ -236,6 +236,10 @@ def dispatch(project, name, args):
         elif name == 'build_project': rc,out = project.build(args.get('extra_args',''))
         else: return 'unknown tool'
         return f'exit={rc}\n{clip(out)}'
+    except (TypeError, ValueError) as e:
+        if name in ('write_file', 'replace_text', 'read_file'):
+            return f'exit=126\\n{name} rejected: {e}'
+        return 'tool error: ' + repr(e)
     except Exception as e:
         return 'tool error: ' + repr(e)
 
