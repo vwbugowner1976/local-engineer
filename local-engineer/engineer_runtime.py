@@ -999,8 +999,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['repair_force_reflection']=False
                     state['repair_git_diff_used']=0
                     state['repair_edit_failures']=0
-                     state['repair_current_diff']=''
-                     state['repair_failed_edit']={}
+                    state['repair_current_diff']=''
+                    state['repair_failed_edit']={}
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run registered build/test immediately. If verification fails, refine this edit in POST_EDIT_REPAIR rather than restarting discovery.'
                 if fn=='build_project': state['build_status']=result[:800]
