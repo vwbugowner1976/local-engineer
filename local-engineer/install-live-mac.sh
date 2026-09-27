@@ -6,6 +6,7 @@ AGENT_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs/local-engineer"
 LIVE_PLIST="$AGENT_DIR/com.localengineer.live.plist"
 PUBLISH_PLIST="$AGENT_DIR/com.localengineer.live-publish.plist"
+UID_NOW="$(id -u)"
 
 mkdir -p "$AGENT_DIR" "$LOG_DIR"
 
@@ -35,6 +36,26 @@ if ! "$GH" auth status >/dev/null 2>&1; then
   exit 1
 fi
 
+# If a manually started live_server is already listening on :8765, hand that
+# listener over to launchd. Do not kill an unrelated process on this port.
+PIDS="$(/usr/sbin/lsof -nP -iTCP:8765 -sTCP:LISTEN -t 2>/dev/null || true)"
+if [ -n "$PIDS" ]; then
+  for PID in $PIDS; do
+    CMD="$(/bin/ps -p "$PID" -o command= 2>/dev/null || true)"
+    if [[ "$CMD" == *"$ROOT/live_server.py"* ]]; then
+      echo "Stopping existing manual live_server (pid $PID) so launchd can own :8765."
+      /bin/kill "$PID" 2>/dev/null || true
+    else
+      echo "ERROR: port 8765 is already used by another process:"
+      echo "  pid=$PID"
+      echo "  $CMD"
+      echo "Refusing to stop an unrelated process."
+      exit 1
+    fi
+  done
+  /bin/sleep 1
+fi
+
 cat > "$LIVE_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,7 +80,7 @@ PLIST
 
 cat > "$PUBLISH_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.localengineer.live-publish</string>
@@ -68,6 +89,11 @@ cat > "$PUBLISH_PLIST" <<PLIST
     <string>$PYTHON</string>
     <string>$ROOT/publish_live_status.py</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$(dirname "$GH"):/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
+  </dict>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>RunAtLoad</key><true/>
   <key>StartInterval</key><integer>15</integer>
@@ -77,16 +103,43 @@ cat > "$PUBLISH_PLIST" <<PLIST
 </plist>
 PLIST
 
+# The heredoc above intentionally writes the same launchd plist format every
+# time, then validates both files before touching launchd.
+/usr/bin/plutil -lint "$LIVE_PLIST" "$PUBLISH_PLIST"
+
 chmod 600 "$LIVE_PLIST" "$PUBLISH_PLIST"
 
-UID_NOW="$(id -u)"
+# Remove any previous jobs if they are actually loaded. Ignore "not found".
 /bin/launchctl bootout "gui/$UID_NOW/com.localengineer.live" 2>/dev/null || true
 /bin/launchctl bootout "gui/$UID_NOW/com.localengineer.live-publish" 2>/dev/null || true
-/bin/launchctl bootstrap "gui/$UID_NOW" "$LIVE_PLIST"
-/bin/launchctl bootstrap "gui/$UID_NOW" "$PUBLISH_PLIST"
 
-/bin/launchctl kickstart -kp "gui/$UID_NOW/com.localengineer.live"
-/bin/launchctl kickstart -kp "gui/$UID_NOW/com.localengineer.live-publish"
+load_agent() {
+  local label="$1"
+  local plist="$2"
+
+  if /bin/launchctl bootstrap "gui/$UID_NOW" "$plist" 2>/tmp/local-engineer-launchctl.err; then
+    return 0
+  fi
+
+  echo "WARNING: launchctl bootstrap failed for $label:"
+  cat /tmp/local-engineer-launchctl.err
+
+  # Older macOS launchd builds may still accept the legacy per-user load path.
+  if /bin/launchctl load -w "$plist" 2>/tmp/local-engineer-launchctl-load.err; then
+    echo "Loaded $label using launchctl load -w."
+    return 0
+  fi
+
+  echo "ERROR: could not load $label."
+  cat /tmp/local-engineer-launchctl-load.err
+  return 1
+}
+
+load_agent "com.localengineer.live" "$LIVE_PLIST"
+load_agent "com.localengineer.live-publish" "$PUBLISH_PLIST"
+
+/bin/launchctl kickstart -kp "gui/$UID_NOW/com.localengineer.live" 2>/dev/null || true
+/bin/launchctl kickstart -kp "gui/$UID_NOW/com.localengineer.live-publish" 2>/dev/null || true
 
 TAILSCALE="$(command -v tailscale || true)"
 if [ -n "$TAILSCALE" ]; then
