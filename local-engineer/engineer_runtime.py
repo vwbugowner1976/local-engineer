@@ -13,6 +13,7 @@ import time
 import socket
 import urllib.error
 import uuid
+import ollaya_observer
 
 
 def bounded_process(argv, cwd=None, timeout=900):
@@ -774,6 +775,7 @@ Never claim a test passed without a successful tool result. If blocked state the
         save()
         for _ in range(m.MAX_ROUNDS):
             state['rounds']+=1
+            ollaya_observer.observe(state, task)
             if state.get('phase')=='post_edit_repair' and state.get('repair_force_reflection'):
                 reflect_post_edit('post-edit verification failure')
             if not edited and project.cfg.get('task_mode')!='inspect':
