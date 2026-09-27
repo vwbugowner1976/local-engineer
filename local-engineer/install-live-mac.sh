@@ -198,11 +198,13 @@ PLIST
   echo "Installing persistent LaunchDaemons as user $USER_NAME; sudo is required."
 
   /usr/bin/sudo /bin/mkdir -p "$DAEMON_DIR"
-  /usr/bin/sudo /usr/sbin/chown root:wheel "$tmp_live" "$tmp_publish"
   /usr/bin/sudo /bin/chmod 644 "$tmp_live" "$tmp_publish"
   /usr/bin/sudo /usr/bin/install -m 644 "$tmp_live" "$LIVE_DAEMON_PLIST"
   /usr/bin/sudo /usr/bin/install -m 644 "$tmp_publish" "$PUBLISH_DAEMON_PLIST"
   /usr/bin/sudo /usr/sbin/chown root:wheel "$LIVE_DAEMON_PLIST" "$PUBLISH_DAEMON_PLIST"
+
+  /bin/rm -f "$tmp_live" "$tmp_publish"
+  trap - RETURN
 
   /usr/bin/sudo /bin/launchctl bootout "system/com.localengineer.live" 2>/dev/null || true
   /usr/bin/sudo /bin/launchctl bootout "system/com.localengineer.live-publish" 2>/dev/null || true
