@@ -132,8 +132,8 @@ PLIST
 
 write_daemon_plists() {
   local tmp_live tmp_publish
-  tmp_live="$(mktemp /tmp/com.localengineer.live.XXXXXX.plist)"
-  tmp_publish="$(mktemp /tmp/com.localengineer.live-publish.XXXXXX.plist)"
+  tmp_live="$(mktemp -t com.localengineer.live).plist"
+  tmp_publish="$(mktemp -t com.localengineer.live-publish).plist"
   trap 'rm -f "$tmp_live" "$tmp_publish"' RETURN
 
   cat > "$tmp_live" <<PLIST
