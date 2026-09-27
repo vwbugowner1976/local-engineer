@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-27T07:29:46+00:00",
+  "published_at": "2026-09-27T07:30:03+00:00",
   "session": "20260927-152459-63051d",
   "status": "running",
-  "phase": "reopened_discovery",
+  "phase": "post_edit_repair",
   "round": 219,
-  "repair_attempt": 34,
+  "repair_attempt": 35,
   "last_tool": "",
   "target": "",
-  "next_action": "Controlled discovery reopen: previous repair hypothesis family was insufficient. Search only for the exact missing dependency named by the repair evidence; do not repeat the rejected hypothesis.",
+  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
   "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 6 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                 \u001b[39m\u001b[1m\u001b[2m0.40 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.27 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[35massets/index-eiN9ezRQ.css  \u001b[39m\u001b[1m\u001b[2m3.29 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 1.21 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-BIcKG0NF.js   \u001b[39m\u001b[1m\u001b[2m2.94 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 1.06 kB\u001b[22m\n\u001b[32m✓ built in 168ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-Ybisdd\\dist. Native Tauri packaging not included.\n",
-  "test_status": "stale after edit",
+  "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: document.getElementById is not a function\nFAIL ready peer remains selected when saved peer follows: document.getElementById is not a function\nFAIL saved fallback with no ready peer: document.getElementById is not a function\nFAIL inactive ready peer is not hero: document.getElementById is not a function\nFAIL no active peer: document.getElementById is not a function\nFAIL first ready peer remains stable: document.getElementById is not a function\n",
   "hypothesis": "The current main.ts was rewritten to use a completely different BridgeState shape (ports: PortInfo[]) instead of the expected peers: PeerState[] array. The tests expect state.peers to be iterable, but the code now exposes state.ports, causing 'state.ports is not iterable' because the test harness is likely passing a mock state with peers, or the rendering code is reading the wrong field. The previous hypothesis about lost DOM declarations is partially correct but the immediate failure is the data model mismatch: the file no longer declares the peers array structure that the 6-case tests depend on.",
   "files_modified": [
     "windows-app/src/main.ts"
