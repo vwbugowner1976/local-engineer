@@ -744,7 +744,9 @@ Never claim a test passed without a successful tool result. If blocked state the
     # POST_EDIT_REPAIR is a closed loop: checkpoint persistence is automatic.
     # Do not expose update_working_state here; otherwise the model can spend
     # the repair budget narrating state instead of editing and verifying.
-    repair_core={'replace_text','write_file','build_project','test_project','finish_task','git_diff'}
+    repair_core={'replace_text','write_file','build_project','test_project','finish_task'}
+    # git_diff is repair evidence generated automatically by reflect_post_edit;
+    # never expose it as a model tool during POST_EDIT_REPAIR.
     def active_definitions():
         if state.get('phase')=='post_edit_repair':
             names=set(repair_core)
@@ -822,7 +824,21 @@ Never claim a test passed without a successful tool result. If blocked state the
             calls=msg.get('tool_calls') or []
             record({'round':state['rounds'],'usage':usage,'message':msg})
             if len(calls)==1 and calls[0].get('function',{}).get('name')=='finish_task':
-                report=json.loads(calls[0]['function'].get('arguments') or '{}').get('report','')
+                raw_finish_args=calls[0]['function'].get('arguments') or '{}'
+                try:
+                    parsed_finish_args=json.loads(raw_finish_args)
+                    report=parsed_finish_args.get('report','') if isinstance(parsed_finish_args,dict) else ''
+                except (json.JSONDecodeError,TypeError,ValueError) as error:
+                    state['failed_attempts']=(state['failed_attempts']+[
+                        'finish_task: malformed tool arguments: '+repr(error)
+                    ])[-5:]
+                    state['next_action']='The final report tool arguments were malformed. Retry finish_task with compact valid JSON, without additional discovery.'
+                    state['tool_calls']+=1
+                    record({'tool':'finish_task','args':{},'raw_arguments':raw_finish_args[:2000],
+                            'result':'exit=125\\nMalformed finish_task arguments rejected: '+repr(error),
+                            'generation':state['generation']})
+                    save()
+                    continue
                 state['tool_calls']+=1
                 record({'tool':'finish_task','args':{'report':report},'result':'final report requested'})
                 msg={'content':report}
