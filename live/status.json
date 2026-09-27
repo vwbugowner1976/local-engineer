@@ -1,17 +1,17 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-27T07:23:18+00:00",
+  "published_at": "2026-09-27T07:23:36+00:00",
   "session": "20260927-152459-63051d",
   "status": "running",
   "phase": "post_edit_repair",
-  "round": 217,
+  "round": 218,
   "repair_attempt": 34,
   "last_tool": "",
-  "target": "",
-  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
+  "target": "windows-app/src/main.ts",
+  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
   "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 3 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                \u001b[39m\u001b[1m\u001b[2m0.33 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.23 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-WrvnoeIt.js  \u001b[39m\u001b[1m\u001b[2m2.35 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 1.00 kB\u001b[22m\n\u001b[32m✓ built in 153ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-AalAJS\\dist. Native Tauri packaging not included.\n",
   "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: state.ports is not iterable\nFAIL ready peer remains selected when saved peer follows: state.ports is not iterable\nFAIL saved fallback with no ready peer: state.ports is not iterable\nFAIL inactive ready peer is not hero: state.ports is not iterable\nFAIL no active peer: state.ports is not iterable\nFAIL first ready peer remains stable: state.ports is not iterable\n",
-  "hypothesis": "The previous write_file replaced main.ts with a broken partial file that lost the DOM element declarations (app, peersEl, statusEl, connectButton, refreshButton), the poll function, and the peer selection/rendering logic. The tests fail with 'app is not defined' because the file no longer declares the app variable or the rendering functions that the tests depend on. The original bug (saved peers displayed before ready peers) requires fixing the peer selection logic in the rendering function, but first the file must be restored to a working state.",
+  "hypothesis": "The current main.ts was rewritten to use a completely different BridgeState shape (ports: PortInfo[]) instead of the expected peers: PeerState[] array. The tests expect state.peers to be iterable, but the code now exposes state.ports, causing 'state.ports is not iterable' because the test harness is likely passing a mock state with peers, or the rendering code is reading the wrong field. The previous hypothesis about lost DOM declarations is partially correct but the immediate failure is the data model mismatch: the file no longer declares the peers array structure that the 6-case tests depend on.",
   "files_modified": [
     "windows-app/src/main.ts"
   ]
