@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-27T03:02:28+00:00",
+  "published_at": "2026-09-27T03:02:47+00:00",
   "session": "20260927-115815-ee2155",
   "status": "running",
   "phase": "post_edit_repair",
   "round": 181,
-  "repair_attempt": 22,
+  "repair_attempt": 23,
   "last_tool": "",
-  "target": "windows-app/src/main.ts",
-  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
-  "build_status": "exit=1\nObject literal may only specify known properties, and 'id' does not exist in type 'PeerState'.\nCannot find name 'RenderState'. Did you mean 'PeerState'?\nObject literal may only specify known properties, and 'id' does not exist in type 'PeerState'.\nProperty 'status' does not exist on type 'PeerState'.\nProperty 'connected' does not exist on type 'PeerState'.\nProperty 'layer' does not exist on type 'PeerState'.\nProperty 'layer' does not exist on type 'PeerState'.\nProperty 'status' does not exist on type 'PeerState'.\nProperty 'status' does not exist on type 'PeerState'.\nProperty 'id' does not exist on type 'PeerState'.\nProperty 'name' does not exist on type 'PeerState'.\n",
-  "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: peersEl is not defined\nFAIL ready peer remains selected when saved peer follows: peersEl is not defined\nFAIL saved fallback with no ready peer: peersEl is not defined\nFAIL inactive ready peer is not hero: peersEl is not defined\nFAIL no active peer: peersEl is not defined\nFAIL first ready peer remains stable: peersEl is not defined\n",
+  "target": "",
+  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
+  "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 3 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                \u001b[39m\u001b[1m\u001b[2m0.33 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.24 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-BMOOP41I.js  \u001b[39m\u001b[1m\u001b[2m1.70 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.81 kB\u001b[22m\n\u001b[32m✓ built in 146ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-kIRgwc\\dist. Native Tauri packaging not included.\n",
+  "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: context.renderState is not a function\nFAIL ready peer remains selected when saved peer follows: context.renderState is not a function\nFAIL saved fallback with no ready peer: context.renderState is not a function\nFAIL inactive ready peer is not hero: context.renderState is not a function\nFAIL no active peer: context.renderState is not a function\nFAIL first ready peer remains stable: context.renderState is not a function\n",
   "hypothesis": "The current main.ts is a broken rewrite that removed the DOM element `peersEl` and the render function the tests expect, while also introducing type mismatches (`id`, `status`, `connected`, `layer`, `name` not in `PeerState`). The previous hypothesis that `peersEl` was missing is still the active failure; the observable behavior that did not change is the test failure message `peersEl is not defined`, meaning the test harness still expects a `peersEl` element and a render path that updates it. The smallest fix is to restore the missing DOM element and render function in main.ts while preserving the new priority logic.",
   "files_modified": [
     "windows-app/src/main.ts"
