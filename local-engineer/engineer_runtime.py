@@ -319,6 +319,35 @@ def preflight(project):
     for path in ('AGENTS.md','README.md'):
         rc,text=project.read_file(path,1,100)
         if rc==0: facts['instructions'][path]=text[:2000]
+
+    # Refresh upstream metadata without changing the worktree.
+    facts['upstream_check']={}
+    rc,out=project.exec('git fetch --quiet',60)
+    if rc:
+        facts['upstream_check']={'status':'unavailable','error':out.strip()[:1000]}
+    else:
+        rc,tracking=project.exec("git rev-parse --abbrev-ref --symbolic-full-name '@{u}'",30)
+        if rc:
+            facts['upstream_check']={'status':'no_tracking_branch','error':tracking.strip()[:1000]}
+        else:
+            tracking=tracking.strip()
+            rc,ab=project.exec("git rev-list --left-right --count HEAD...'@{u}'",30)
+            if rc:
+                facts['upstream_check']={'status':'error','tracking':tracking,'error':ab.strip()[:1000]}
+            else:
+                parts=ab.strip().split()
+                ahead=int(parts[0]) if len(parts)>0 else 0
+                behind=int(parts[1]) if len(parts)>1 else 0
+                rc,commits=project.exec("git log --oneline HEAD..'@{u}' -5",30)
+                rc_files,files=project.exec("git diff --name-only HEAD..'@{u}'",30)
+                facts['upstream_check']={
+                    'status':'ok',
+                    'tracking':tracking,
+                    'ahead':ahead,
+                    'behind':behind,
+                    'remote_commits':commits.strip() if rc==0 else '',
+                    'remote_files':files.strip() if rc_files==0 else '',
+                }
     return facts
 
 
