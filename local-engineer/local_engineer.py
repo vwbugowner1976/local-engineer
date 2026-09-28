@@ -249,6 +249,49 @@ def agent(project, task, resume=None):
     return run_agent(sys.modules[__name__], project, task, resume)
 
 
+def doctor(cfg):
+    print('=== Local Engineer doctor ===')
+    checks = []
+
+    try:
+        data = get_json(API_BASE + '/models', timeout=3)
+        model = data.get('data',[{}])[0].get('id','unknown')
+        checks.append(('Bonsai API', True, f'127.0.0.1:8080 ({model})'))
+    except Exception as e:
+        checks.append(('Bonsai API', False, '127.0.0.1:8080'))
+
+    host = os.environ.get('LOCAL_ENGINEER_SSH_HOST', cfg.get('settings',{}).get('ssh_host','wsl'))
+    tunnel_ok = False
+    try:
+        import socket
+        with socket.create_connection(('127.0.0.1', 2222), timeout=2):
+            tunnel_ok = True
+    except Exception:
+        tunnel_ok = False
+    checks.append(('WSL SSH :2222', tunnel_ok, 'reverse tunnel'))
+
+    try:
+        p = subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=3',host,'echo','LOCAL_ENGINEER_SSH_OK'],
+                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=5)
+        checks.append((f'SSH host {host}', p.returncode == 0, 'ssh connectivity'))
+    except Exception:
+        checks.append((f'SSH host {host}', False, 'ssh connectivity'))
+
+    for name, pcfg in cfg.get('projects',{}).items():
+        try:
+            p = Project(name, pcfg, cfg)
+            ok = p.exists()
+            checks.append((name, ok, p.root))
+        except Exception:
+            checks.append((name, False, pcfg.get('root','')))
+
+    for name, ok, detail in checks:
+        print(f"{name:20} : {'OK' if ok else 'FAIL'}  {detail}")
+    required = checks
+    ready = all(ok for _, ok, _ in required)
+    print(f"\\nOverall              : {'READY' if ready else 'NOT READY'}")
+    return 0 if ready else 1
+
 def discover(cfg):
     host=os.environ.get('LOCAL_ENGINEER_SSH_HOST', cfg.get('settings',{}).get('ssh_host','wsl'))
     roots=['/home/stc/zmk-dev','/home/stc/zmk-sim','/home/stc/rmk-dev']
@@ -268,7 +311,7 @@ def discover(cfg):
 def main():
     ap=argparse.ArgumentParser(prog='local-engineer')
     sub=ap.add_subparsers(dest='cmd',required=True)
-    sub.add_parser('status'); sub.add_parser('projects'); sub.add_parser('discover')
+    sub.add_parser('status'); sub.add_parser('projects'); sub.add_parser('discover'); sub.add_parser('doctor')
     b=sub.add_parser('build'); b.add_argument('project'); b.add_argument('extra',nargs='*')
     f=sub.add_parser('fix'); f.add_argument('project'); f.add_argument('task',nargs='+')
     i=sub.add_parser('inspect'); i.add_argument('project'); i.add_argument('task',nargs='+')
@@ -277,6 +320,7 @@ def main():
     a=sub.add_parser('ask'); a.add_argument('task',nargs='+')
     args=ap.parse_args()
     cfg=load_cfg() if CFG.exists() or args.cmd!='resume' else {'settings':{},'projects':{}}
+    if args.cmd=='doctor': raise SystemExit(doctor(cfg))
     if args.cmd=='status':
         subprocess.run([str(HOME/'bin/llm'),'status']); return
     if args.cmd=='projects':
