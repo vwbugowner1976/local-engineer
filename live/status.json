@@ -1,17 +1,17 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-28T10:46:43+00:00",
+  "published_at": "2026-09-28T10:47:01+00:00",
   "session": "20260928-192549-dc43cb",
   "status": "running",
   "phase": "post_edit_repair",
-  "round": 9,
+  "round": 10,
   "repair_attempt": 1,
   "last_tool": "",
   "target": "windows-app/src/main.ts",
   "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
   "build_status": "exit=1\nProperty 'dataset' does not exist on type 'Element'.\nProperty 'label' does not exist on type 'PeerState'.\nProperty 'label' does not exist on type 'PeerState'.\nProperty 'label' does not exist on type 'PeerState'.\n",
   "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: document.querySelectorAll is not a function\nFAIL ready peer remains selected when saved peer follows: document.querySelectorAll is not a function\nFAIL saved fallback with no ready peer: document.querySelectorAll is not a function\nFAIL inactive ready peer is not hero: document.querySelectorAll is not a function\nFAIL no active peer: document.querySelectorAll is not a function\nFAIL first ready peer remains stable: document.querySelectorAll is not a function\n",
-  "hypothesis": "The previous edit introduced a type mismatch by using peer.label, but the cached PeerState type has no label property. The build failure is now caused by the missing label field. The test runtime failure (document.querySelectorAll is not a function) is a separate environment issue that has not changed, but the immediate blocker is the TypeScript build error. The correct fix is to use the existing name field from the previous type definition, which was removed in the last edit. I need to restore the name field to PeerState and use it consistently.",
+  "hypothesis": "The current edit removed `name` from `PeerState` and switched to `label`, but `label` is not defined in the type, causing the remaining build errors. The test failures are still caused by the test runtime lacking `document.querySelectorAll`, which is a separate environment issue from the build. The immediate build blocker is the undefined `label` property; I need to restore the correct property name that the test harness expects.",
   "files_modified": [
     "windows-app/src/main.ts"
   ]
