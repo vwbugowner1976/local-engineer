@@ -745,7 +745,7 @@ Never claim a test passed without a successful tool result. If blocked state the
     # POST_EDIT_REPAIR is a closed loop: checkpoint persistence is automatic.
     # Do not expose update_working_state here; otherwise the model can spend
     # the repair budget narrating state instead of editing and verifying.
-    repair_core={'replace_text','write_file','build_project','test_project','finish_task'}
+    repair_core={'replace_text','build_project','test_project','finish_task'}
     # git_diff is repair evidence generated automatically by reflect_post_edit;
     # never expose it as a model tool during POST_EDIT_REPAIR.
     def active_definitions():
