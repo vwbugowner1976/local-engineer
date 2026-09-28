@@ -63,13 +63,21 @@ class Project:
         self.transport = cfg.get('transport', 'local')
         self.root = os.path.expanduser(cfg['root'])
         self.host = cfg.get('ssh_host') or global_cfg.get('settings', {}).get('ssh_host', 'wsl')
+        self.ssh_port = cfg.get('ssh_port') or global_cfg.get('settings', {}).get('ssh_port')
+        self.ssh_control_path = cfg.get('ssh_control_path') or global_cfg.get('settings', {}).get('ssh_control_path')
         self.build_cmd = cfg.get('build', 'auto')
         self.backed_up = set()
         self.backup_root = STATE/'backups'/name/dt.datetime.now().strftime('%Y%m%d-%H%M%S')
 
     def _remote(self, shell_cmd, timeout=900):
         full = f"cd {shlex.quote(self.root)} && {shell_cmd}"
-        p = subprocess.run(['ssh', self.host, full], text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
+        ssh_cmd = ['ssh']
+        if self.ssh_port:
+            ssh_cmd += ['-p', str(self.ssh_port)]
+        if self.ssh_control_path:
+            ssh_cmd += ['-o', f'ControlPath={self.ssh_control_path}']
+        ssh_cmd += [self.host, full]
+        p = subprocess.run(ssh_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout)
         return p.returncode, p.stdout
 
     def exec(self, shell_cmd, timeout=900):
