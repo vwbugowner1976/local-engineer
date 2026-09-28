@@ -1,10 +1,10 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-28T12:51:08+00:00",
+  "published_at": "2026-09-28T12:51:25+00:00",
   "session": "20260928-214236-be0664",
-  "status": "running",
+  "status": "completed",
   "phase": "normal",
-  "round": 3,
+  "round": 4,
   "repair_attempt": 0,
   "last_tool": "",
   "target": "",
