@@ -28,6 +28,35 @@ llm logs
 
 Bonsai runs from the existing `~/Bonsai-demo` installation with PQ2_0, Metal, context 8192, text-only mode, and a server-wide reasoning budget of 2048.
 
+## Japanese Bonsai Web Chat
+
+The optional `web_chat.py` provides a small browser UI for talking to the local Bonsai server in Japanese.
+
+Start Bonsai first:
+
+```bash
+llm bonsai
+```
+
+Then start the web chat:
+
+```bash
+python3 web_chat.py --host 0.0.0.0 --port 8780
+```
+
+Open `http://127.0.0.1:8780` on the Mac. For a phone or another device on the same trusted network/Tailscale, use the Mac's reachable address and port 8780.
+
+The chat server talks only to the local OpenAI-compatible Bonsai endpoint at `http://127.0.0.1:8080/v1` by default. Override it with `BONSAI_API_BASE`.
+
+For a remotely reachable deployment, set an access token before starting the server:
+
+```bash
+export LOCAL_ENGINEER_WEB_TOKEN='choose-a-long-random-token'
+python3 web_chat.py --host 0.0.0.0 --port 8780
+```
+
+The first version is intentionally chat-only. It does not execute Local Engineer tools from chat. Tool/status integration can be added as the next layer after the basic Bonsai conversation is working.
+
 ## WSL projects
 
 Default SSH alias: `wsl`.
@@ -67,7 +96,6 @@ llm bonsai-tech
 ```
 
 The manager checks that no `mlx_worker.py` appears in Bonsai mode; if one does, it stops Technocore again to avoid another 16 GB unified-memory collision.
-
 
 ## Durable Local Engineer (2026-09-19)
 
