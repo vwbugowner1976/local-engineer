@@ -105,7 +105,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = {
             "messages": clean_messages,
             "temperature": 0.2,
-            "stream": False,
+            "stream": True,
         }
         if BONSAl_MODEL:
             payload["model"] = BONSAl_MODEL
@@ -113,42 +113,67 @@ class Handler(BaseHTTPRequestHandler):
         request = urllib.request.Request(
             f"{BONSAl_API_BASE}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
             method="POST",
         )
 
+        # Stream tokens from Bonsai to the browser as newline-delimited JSON.
+        # This keeps the existing Local Engineer/Bonsai process untouched.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
-                result = json.loads(response.read())
+                usage = None
+                model = BONSAl_MODEL or "Bonsai"
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or line.startswith(":"):
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if chunk.get("model"):
+                        model = chunk["model"]
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+
+                    delta = ""
+                    try:
+                        delta = chunk["choices"][0].get("delta", {}).get("content", "") or ""
+                    except (KeyError, IndexError, TypeError):
+                        pass
+
+                    if delta:
+                        self.wfile.write((json.dumps({"delta": delta}, ensure_ascii=False) + "\n").encode("utf-8"))
+                        self.wfile.flush()
+
+                self.wfile.write((json.dumps({"done": True, "model": model, "usage": usage}, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            json_response(self, {"error": f"Bonsai HTTP {exc.code}", "detail": detail[-4000:]}, 502)
-            return
+            try:
+                self.wfile.write((json.dumps({"error": f"Bonsai HTTP {exc.code}", "detail": detail[-4000:]}, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         except (urllib.error.URLError, TimeoutError) as exc:
-            json_response(self, {"error": f"Bonsai connection failed: {exc}"}, 502)
-            return
-        except json.JSONDecodeError as exc:
-            json_response(self, {"error": f"Bonsai returned invalid JSON: {exc}"}, 502)
-            return
-
-        try:
-            choice = result["choices"][0]
-            message = choice["message"]
-            content = message.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-        except (KeyError, IndexError, TypeError) as exc:
-            json_response(self, {"error": f"unexpected Bonsai response: {exc}", "detail": result}, 502)
-            return
-
-        json_response(
-            self,
-            {
-                "content": content,
-                "model": result.get("model", BONSAl_MODEL or "Bonsai"),
-                "usage": result.get("usage"),
-            },
-        )
+            try:
+                self.wfile.write((json.dumps({"error": f"Bonsai connection failed: {exc}"}, ensure_ascii=False) + "\n").encode("utf-8"))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, fmt: str, *args: object) -> None:
         print("[web-chat] " + fmt % args, flush=True)
