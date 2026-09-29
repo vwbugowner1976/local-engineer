@@ -111,6 +111,11 @@ main{max-width:1000px;margin:auto;padding:16px}
 h1{font-size:22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
 .label{color:#999;font-size:12px}.value{font-size:16px;margin-top:3px}
 pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px;line-height:1.45}
+.event{padding:10px 0;border-bottom:1px solid #2b2b2b}
+.event:last-child{border-bottom:0}
+.event-tool{font-weight:700;font-size:13px;margin-bottom:5px}
+.event-args{color:#aaa;margin-bottom:5px}
+.event-result{color:#ddd}
 #events{max-height:58vh;overflow:auto}
 button{padding:9px 12px;border-radius:8px;border:1px solid #555;background:#222;color:#fff}
 .ok{color:#9f9}.bad{color:#f99}.muted{color:#aaa}
@@ -125,6 +130,21 @@ button{padding:9px 12px;border-radius:8px;border:1px solid #555;background:#222;
 <script>
 let seq=0;
 function esc(x){return String(x??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function stripAnsi(x){
+  return String(x??'')
+    .replace(/\x1B\][0-?]*[ -\/]*[@-~]/g,'')
+    .replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g,'')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,'');
+}
+function formatEvent(e){
+  const tool=e.tool||e.message?.tool_calls?.[0]?.function?.name||e.type||'event';
+  const result=stripAnsi(e.result||'');
+  const args=e.args&&Object.keys(e.args).length?JSON.stringify(e.args,null,2):'';
+  return '<div class="event"><div class="event-tool">'+esc(tool)+'</div>'+
+    (args?'<pre class="event-args">'+esc(args)+'</pre>':'')+
+    (result?'<pre class="event-result">'+esc(result)+'</pre>':'')+
+    '</div>';
+}
 async function refresh(){
   try{
     const s=await fetch('/status').then(r=>r.json());
@@ -137,7 +157,7 @@ async function refresh(){
     document.getElementById('status').innerHTML=rows.map(([a,b])=>'<div><div class="label">'+esc(a)+'</div><div class="value">'+esc(b)+'</div></div>').join('');
     document.getElementById('hypothesis').textContent=s.hypothesis||'';
     const ev=await fetch('/events?since='+seq+'&limit=120').then(r=>r.json());
-    if(ev.length){seq=Math.max(seq,...ev.map(x=>x._seq));const box=document.getElementById('events');box.insertAdjacentHTML('beforeend',ev.map(e=>'<pre>'+esc(JSON.stringify(e))+'</pre>').join(''));box.scrollTop=box.scrollHeight;}
+    if(ev.length){seq=Math.max(seq,...ev.map(x=>x._seq));const box=document.getElementById('events');box.insertAdjacentHTML('beforeend',ev.map(formatEvent).join(''));box.scrollTop=box.scrollHeight;}
   }catch(e){document.getElementById('control').textContent='connection: '+e}
 }
 async function control(action){const r=await fetch('/'+action,{method:'POST'});document.getElementById('control').textContent=await r.text();}
