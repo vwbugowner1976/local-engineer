@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<title>Local Engineer — Bonsai Chat</title>
+<style>
+:root{color-scheme:dark;--bg:#0f1115;--panel:#171a21;--panel2:#1d212b;--border:#2c3240;--text:#f3f5f7;--muted:#969eac;--accent:#8ab4ff;--user:#233a5f;--assistant:#1b2029}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
+body{display:flex;justify-content:center}
+.app{width:min(900px,100%);height:100dvh;display:flex;flex-direction:column}
+header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;background:rgba(15,17,21,.96);position:sticky;top:0;z-index:2}
+.logo{width:34px;height:34px;border:1px solid var(--border);border-radius:10px;display:grid;place-items:center;background:var(--panel2);font-weight:800}
+.title{font-weight:750}.sub{font-size:12px;color:var(--muted);margin-top:2px}
+.dot{margin-left:auto;width:9px;height:9px;border-radius:50%;background:#777}.dot.ok{background:#70d394}.dot.bad{background:#e67b7b}
+main{flex:1;overflow:auto;padding:18px 14px 110px}
+.welcome{max-width:680px;margin:9vh auto 0;text-align:center}.welcome h1{font-size:28px;margin:0 0 10px}.welcome p{color:var(--muted);line-height:1.6}
+.examples{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;margin-top:22px}.examples button{background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:999px;padding:9px 12px}
+.msg{display:flex;margin:14px 0}.msg.user{justify-content:flex-end}.bubble{max-width:min(82%,720px);padding:11px 14px;border-radius:16px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}.user .bubble{background:var(--user);border-bottom-right-radius:5px}.assistant .bubble{background:var(--assistant);border:1px solid var(--border);border-bottom-left-radius:5px}
+.meta{font-size:11px;color:var(--muted);margin:4px 5px}.msg.user .meta{text-align:right}
+.composer{position:fixed;bottom:0;width:min(900px,100%);padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:linear-gradient(transparent,var(--bg) 18%);z-index:3}
+form{display:flex;gap:8px;background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:8px;box-shadow:0 8px 30px #0006}
+textarea{flex:1;resize:none;border:0;outline:0;background:transparent;color:var(--text);font:inherit;line-height:1.45;min-height:42px;max-height:140px;padding:8px}
+button{font:inherit;cursor:pointer}.send{align-self:flex-end;border:0;border-radius:11px;background:var(--accent);color:#0b1220;padding:9px 14px;font-weight:750}.send:disabled{opacity:.45;cursor:default}
+.clear{margin-left:auto;background:transparent;border:0;color:var(--muted);font-size:12px}
+.typing{color:var(--muted);font-size:13px;padding:8px 4px}
+@media(max-width:600px){main{padding-left:10px;padding-right:10px}.bubble{max-width:90%}.welcome h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+  <div class="logo">B</div>
+  <div><div class="title">Local Engineer</div><div class="sub">Bonsai 27B · 日本語チャット</div></div>
+  <div id="dot" class="dot"></div>
+  <button class="clear" id="clear">履歴を消去</button>
+</header>
+<main id="messages">
+  <div class="welcome" id="welcome">
+    <h1>Bonsaiに聞いてみよう</h1>
+    <p>Mac mini上のBonsai 27Bに日本語で質問できます。<br>まずは普通の会話から始めて、後でLocal Engineerの操作へ拡張します。</p>
+    <div class="examples">
+      <button>こんにちは。自己紹介して</button>
+      <button>Local Engineerって何？</button>
+      <button>日本語でコードの説明もできる？</button>
+    </div>
+  </div>
+</main>
+<div class="composer">
+<form id="form">
+  <textarea id="input" placeholder="Bonsaiに質問…" rows="1" autocomplete="off"></textarea>
+  <button class="send" id="send" type="submit">送信</button>
+</form>
+</div>
+</div>
+<script>
+const messagesEl=document.getElementById("messages");
+const welcome=document.getElementById("welcome");
+const input=document.getElementById("input");
+const send=document.getElementById("send");
+const dot=document.getElementById("dot");
+const form=document.getElementById("form");
+const clear=document.getElementById("clear");
+let messages=[];
+function add(role,text){
+  welcome?.remove();
+  const wrap=document.createElement("div"); wrap.className="msg "+role;
+  const inner=document.createElement("div");
+  const bubble=document.createElement("div"); bubble.className="bubble"; bubble.textContent=text;
+  inner.appendChild(bubble); wrap.appendChild(inner); messagesEl.appendChild(wrap);
+  messagesEl.scrollTop=messagesEl.scrollHeight;
+  return bubble;
+}
+function setBusy(b){send.disabled=b;input.disabled=b;dot.className="dot"+(b?"":" ok");}
+async function health(){try{const r=await fetch("/health");dot.className="dot "+(r.ok?"ok":"bad")}catch{dot.className="dot bad"}}
+form.addEventListener("submit",async e=>{
+  e.preventDefault(); const text=input.value.trim(); if(!text||send.disabled)return;
+  add("user",text); messages.push({role:"user",content:text}); input.value=""; input.style.height="auto"; setBusy(true);
+  const bubble=add("assistant","考え中…");
+  try{
+    const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages})});
+    const data=await r.json(); if(!r.ok) throw new Error(data.error+(data.detail?"\n"+data.detail:""));
+    bubble.textContent=data.content||"(回答がありませんでした)";
+    messages.push({role:"assistant",content:data.content||""});
+  }catch(err){bubble.textContent="エラー: "+err.message}
+  finally{setBusy(false);input.focus();health()}
+});
+input.addEventListener("input",()=>{input.style.height="auto";input.style.height=Math.min(input.scrollHeight,140)+"px"});
+input.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();form.requestSubmit()}});
+document.querySelectorAll(".examples button").forEach(b=>b.addEventListener("click",()=>{input.value=b.textContent;input.focus()}));
+clear.addEventListener("click",()=>{messages=[];messagesEl.innerHTML="";location.reload()});
+health();setInterval(health,10000);input.focus();
+</script>
+</body>
+</html>
