@@ -79,11 +79,36 @@ form.addEventListener("submit",async e=>{
   e.preventDefault(); const text=input.value.trim(); if(!text||send.disabled)return;
   add("user",text); messages.push({role:"user",content:text}); input.value=""; input.style.height="auto"; setBusy(true);
   const bubble=add("assistant","考え中…");
+  let answer="";
   try{
     const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({messages})});
-    const data=await r.json(); if(!r.ok) throw new Error(data.error+(data.detail?"\n"+data.detail:""));
-    bubble.textContent=data.content||"(回答がありませんでした)";
-    messages.push({role:"assistant",content:data.content||""});
+    if(!r.ok) {
+      let data={}; try{data=await r.json()}catch{}
+      throw new Error(data.error+(data.detail?"\n"+data.detail:"")||"HTTP "+r.status);
+    }
+    if(!r.body) throw new Error("ストリーミングに対応していないブラウザです");
+    const reader=r.body.getReader(), decoder=new TextDecoder();
+    let buffer="";
+    while(true){
+      const {value,done}=await reader.read();
+      if(done) break;
+      buffer+=decoder.decode(value,{stream:true});
+      const lines=buffer.split("\n"); buffer=lines.pop()||"";
+      for(const line of lines){
+        if(!line.trim()) continue;
+        const data=JSON.parse(line);
+        if(data.error) throw new Error(data.error+(data.detail?"\n"+data.detail:""));
+        if(data.delta){
+          if(!answer) answer="";
+          answer+=data.delta;
+          bubble.textContent=answer;
+          messagesEl.scrollTop=messagesEl.scrollHeight;
+        }
+      }
+    }
+    if(!answer) answer="(回答がありませんでした)";
+    bubble.textContent=answer;
+    messages.push({role:"assistant",content:answer});
   }catch(err){bubble.textContent="エラー: "+err.message}
   finally{setBusy(false);input.focus();health()}
 });
