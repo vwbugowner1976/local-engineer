@@ -6,6 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -143,8 +146,36 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(b": connected\n\n")
                 self.wfile.flush()
 
-                for raw_line in response:
-                    line = raw_line.decode("utf-8", errors="replace").strip()
+                # Read Bonsai in a worker so the HTTP handler can emit
+                # keep-alive comments even while Bonsai is silently reasoning.
+                lines: queue.Queue[object] = queue.Queue()
+                sentinel = object()
+
+                def read_upstream() -> None:
+                    try:
+                        for raw_line in response:
+                            lines.put(raw_line)
+                    except Exception as exc:
+                        lines.put(exc)
+                    finally:
+                        lines.put(sentinel)
+
+                threading.Thread(target=read_upstream, daemon=True).start()
+
+                while True:
+                    try:
+                        item = lines.get(timeout=10)
+                    except queue.Empty:
+                        self.wfile.write(b": keep-alive\n\n")
+                        self.wfile.flush()
+                        continue
+
+                    if item is sentinel:
+                        break
+                    if isinstance(item, Exception):
+                        raise item
+
+                    line = item.decode("utf-8", errors="replace").strip()
                     if not line or line.startswith(":"):
                         continue
                     if line.startswith("data:"):
