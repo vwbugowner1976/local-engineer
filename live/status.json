@@ -1,17 +1,17 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-29T14:55:21+00:00",
+  "published_at": "2026-09-29T14:55:38+00:00",
   "session": "20260929-233702-066d38",
   "status": "running",
   "phase": "post_edit_repair",
-  "round": 8,
+  "round": 9,
   "repair_attempt": 1,
   "last_tool": "",
-  "target": "",
-  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
+  "target": "windows-app/src/main.ts",
+  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
   "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 3 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                \u001b[39m\u001b[1m\u001b[2m0.33 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.24 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-B5Qt9EMX.js  \u001b[39m\u001b[1m\u001b[2m0.71 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.40 kB\u001b[22m\n\u001b[32m✓ built in 121ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-uh0NMH\\dist. Native Tauri packaging not included.\n",
   "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: context.renderState is not a function\nFAIL ready peer remains selected when saved peer follows: context.renderState is not a function\nFAIL saved fallback with no ready peer: context.renderState is not a function\nFAIL inactive ready peer is not hero: context.renderState is not a function\nFAIL no active peer: context.renderState is not a function\nFAIL first ready peer remains stable: context.renderState is not a function\nFAIL protocol data flows through parseState to renderState: context.parseState is not a function\n",
-  "hypothesis": "The failing test expects the hero/active peer to be the first ready peer in the active mask, but the current logic prefers an active ready peer over any saved/bonded fallback, which may select a different peer (e.g., 'GAMING' instead of 'Keyboard-A'). The fix should ensure the hero peer selection prioritizes the first ready peer in the active mask, not just any active ready peer.",
+  "hypothesis": "The previous edit replaced the entire main.ts with a placeholder, removing parseState and renderState. The failing test now fails because context.parseState and context.renderState are not functions. The fix must restore the full main.ts implementation with correct hero peer selection logic that prioritizes the first ready peer in the active mask.",
   "files_modified": [
     "windows-app/src/main.ts"
   ]
