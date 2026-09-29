@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-29T15:10:21+00:00",
+  "published_at": "2026-09-29T15:10:38+00:00",
   "session": "20260929-233702-066d38",
   "status": "running",
-  "phase": "post_edit_repair",
+  "phase": "reopened_discovery",
   "round": 12,
   "repair_attempt": 2,
   "last_tool": "",
-  "target": "windows-app/src/main.ts",
-  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
-  "build_status": "exit=1\nProperty 'battery' does not exist on type 'PeerState'.\nProperty 'battery' does not exist on type 'PeerState'.\n",
-  "test_status": "exit=1\nFAIL later ready peer overrides earlier saved peer: peersEl is not defined\nFAIL ready peer remains selected when saved peer follows: peersEl is not defined\nFAIL saved fallback with no ready peer: peersEl is not defined\nFAIL inactive ready peer is not hero: peersEl is not defined\nFAIL no active peer: peersEl is not defined\nFAIL first ready peer remains stable: peersEl is not defined\nFAIL protocol data flows through parseState to renderState: invalid bridge state\n",
+  "target": "",
+  "next_action": "Controlled discovery reopen: previous repair hypothesis family was insufficient. Search only for the exact missing dependency named by the repair evidence; do not repeat the rejected hypothesis.",
+  "build_status": "stale after edit",
+  "test_status": "stale after edit",
   "hypothesis": "The current main.ts is a rewritten version that no longer matches the test harness's expected module shape. The tests expect context.parseState and context.renderState to be exported functions, and they expect a DOM element with id 'peers' to exist. The current file has peersEl defined at line 47, but the test error says 'peersEl is not defined', which suggests the test is importing a different context or the file structure is wrong. More importantly, the build fails with 'Property battery does not exist on type PeerState', meaning the test harness or another file references a 'battery' property that doesn't exist in the current PeerState type. The previous hypothesis said the file was destroyed and needs restoration, but the current diff shows a rewritten file, not a placeholder. The real issue is that the test expects specific exports (parseState, renderState) and a specific PeerState shape (with 'battery' field). The current file has centralBattery and peripheralBattery but no 'battery' field. The test likely expects a 'battery' field on PeerState. Also, the test says 'peersEl is not defined' which means the test context doesn't have peersEl - this suggests the test is not using…",
   "files_modified": [
     "windows-app/src/main.ts"
