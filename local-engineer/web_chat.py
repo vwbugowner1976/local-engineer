@@ -39,7 +39,7 @@ def json_response(handler: BaseHTTPRequestHandler, payload: object, status: int 
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "LocalEngineerBonsaiChat/0.1"
+    server_version = "LocalEngineerBonsaiChat/0.2"
 
     def authorized(self) -> bool:
         if not WEB_TOKEN:
@@ -113,22 +113,36 @@ class Handler(BaseHTTPRequestHandler):
         request = urllib.request.Request(
             f"{BONSAl_API_BASE}/chat/completions",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+                "Cache-Control": "no-cache",
+            },
             method="POST",
         )
 
-        # Stream tokens from Bonsai to the browser as newline-delimited JSON.
-        # This keeps the existing Local Engineer/Bonsai process untouched.
+        # Proxy Bonsai SSE as SSE.  Sending heartbeat comments while Bonsai is
+        # reasoning keeps browser/proxy connections alive before content arrives.
         self.send_response(200)
-        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache, no-store")
-        self.send_header("Connection", "close")
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "keep-alive")
         self.end_headers()
+
+        def send_event(payload: object) -> None:
+            raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            self.wfile.write(f"data: {raw}\n\n".encode("utf-8"))
+            self.wfile.flush()
 
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
                 usage = None
                 model = BONSAl_MODEL or "Bonsai"
+                # Tell the browser immediately that the upstream request is alive.
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+
                 for raw_line in response:
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line or line.startswith(":"):
@@ -154,22 +168,20 @@ class Handler(BaseHTTPRequestHandler):
                         pass
 
                     if delta:
-                        self.wfile.write((json.dumps({"delta": delta}, ensure_ascii=False) + "\n").encode("utf-8"))
-                        self.wfile.flush()
+                        send_event({"delta": delta})
 
-                self.wfile.write((json.dumps({"done": True, "model": model, "usage": usage}, ensure_ascii=False) + "\n").encode("utf-8"))
+                send_event({"done": True, "model": model, "usage": usage})
+                self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             try:
-                self.wfile.write((json.dumps({"error": f"Bonsai HTTP {exc.code}", "detail": detail[-4000:]}, ensure_ascii=False) + "\n").encode("utf-8"))
-                self.wfile.flush()
+                send_event({"error": f"Bonsai HTTP {exc.code}", "detail": detail[-4000:]})
             except (BrokenPipeError, ConnectionResetError):
                 pass
         except (urllib.error.URLError, TimeoutError) as exc:
             try:
-                self.wfile.write((json.dumps({"error": f"Bonsai connection failed: {exc}"}, ensure_ascii=False) + "\n").encode("utf-8"))
-                self.wfile.flush()
+                send_event({"error": f"Bonsai connection failed: {exc}"})
             except (BrokenPipeError, ConnectionResetError):
                 pass
         except (BrokenPipeError, ConnectionResetError):
