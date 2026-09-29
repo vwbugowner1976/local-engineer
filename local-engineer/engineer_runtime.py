@@ -543,6 +543,8 @@ def _run_agent(m,project,task,resume=None):
         state['repair_previous_build_status']=str(previous_build or state.get('repair_previous_build_status',''))[:1200]
         state['repair_previous_test_status']=str(previous_test or state.get('repair_previous_test_status',''))[:1200]
         state['verification_failure_class']=classify_verification_failure(previous_build,previous_test)
+        rc,test_source=project.read_test_source(1,260)
+        state['registered_test_evidence'] = test_source[:12000] if rc == 0 else ''
         state['repair_force_reflection']=True
         state['experiment_required']=False
         state['targeted_discovery_required']=False
@@ -591,6 +593,7 @@ def _run_agent(m,project,task,resume=None):
                                 'current_build':state.get('build_status',''),
                                 'current_test':state.get('test_status',''),
                                 'failed_edit':state.get('repair_failed_edit',{}),
+                                'registered_test_evidence':state.get('registered_test_evidence',''),
                                 'cached_targeted_evidence':cached_targeted_evidence},ensure_ascii=False)[:14500]}]}
         tokens=measure_tokens(m,prompt)
         if tokens+prompt['max_tokens']+256>int(project.cfg.get('context_length',8192)): return

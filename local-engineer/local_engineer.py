@@ -91,6 +91,49 @@ class Project:
             return rc == 0
         return pathlib.Path(self.root).is_dir()
 
+    def test_source_path(self):
+        import re
+        try:
+            parts = shlex.split(str(self.cfg.get('test','')))
+        except ValueError:
+            return ''
+        for i, part in enumerate(parts[:-1]):
+            if re.fullmatch(r'python(?:3(?:\\.[0-9]+)?)?|pypy(?:3)?', part):
+                candidate = parts[i + 1]
+                if candidate.endswith('.py') and not candidate.startswith('-'):
+                    return candidate
+        return ''
+
+    def read_test_source(self, start=1, end=260):
+        path = self.test_source_path()
+        if not path:
+            return 2, 'registered test source not found'
+        parts = pathlib.PurePosixPath(path).parts
+        if any(
+            part.lower().startswith('.env') or
+            re.search(r'(secret|token|private[_-]?key|sign[_-]?seed|credentials?)', part, re.I)
+            for part in parts
+        ):
+            return 126, 'registered test source rejected: sensitive-looking path'
+        start = max(1, int(start))
+        end = max(start, min(int(end), start + 399))
+        if self.transport == 'ssh':
+            py = (
+                "import pathlib; p=pathlib.Path(%r); "
+                "lines=p.read_text(errors='replace').splitlines(); "
+                "a=%d; b=%d; print('\\n'.join(f'{i+1}: {lines[i]}' "
+                "for i in range(a-1,min(b,len(lines)))))"
+            ) % (path, start, end)
+            rc, out = self._remote('python3 -c ' + shlex.quote(py), 60)
+        else:
+            p = pathlib.Path(path)
+            if not p.exists():
+                return 2, 'file not found'
+            lines = p.read_text(errors='replace').splitlines()
+            out = '\\n'.join(f'{i+1}: {lines[i]}' for i in range(start-1, min(end, len(lines))))
+            rc = 0
+        return rc, clip(out)
+
     def read_file(self, path, start=1, end=260):
         path = safe_rel(path)
         start = max(1, int(start)); end = max(start, min(int(end), start+399))
@@ -225,6 +268,8 @@ def tool_defs(phase='discovery'):
         return edit_verify
     common = list(edit_verify)
     common.insert(2, f('read_file','Read contiguous source lines. Use search match line numbers for start_line; do not always start at 1. Follow the continuation line if output is bounded.',{'path':{'type':'string'},'start_line':{'type':'integer'},'end_line':{'type':'integer'}},['path']))
+    if phase == 'post_edit_repair':
+        common.insert(3, f('read_test_source','Read the registered test script as verification evidence. Only the script directly registered by the project test command is available.',{'start_line':{'type':'integer'},'end_line':{'type':'integer'}},[]))
     if phase == 'discovery':
         common.insert(2, f('list_files','List project files to a bounded depth.',{'depth':{'type':'integer','minimum':1,'maximum':6}},[]))
         common.insert(3, f('search_text','Search text with ripgrep.',{'pattern':{'type':'string'},'glob':{'type':'string'}},['pattern']))
@@ -238,6 +283,7 @@ def dispatch(project, name, args):
         elif name == 'list_files': rc,out = project.list_files(args.get('depth',3))
         elif name == 'search_text': rc,out = project.search(args['pattern'], args.get('glob',''))
         elif name == 'read_file': rc,out = project.read_file(args['path'], args.get('start_line',1), args.get('end_line',260))
+        elif name == 'read_test_source': rc,out = project.read_test_source(args.get('start_line',1), args.get('end_line',260))
         elif name == 'replace_text': rc,out = project.replace_text(args['path'], args['old'], args['new'], args.get('count',1))
         elif name == 'write_file': rc,out = project.write_file(args['path'], args['content'])
         elif name == 'run_command': rc,out = project.command(args['command'], args.get('timeout',900))

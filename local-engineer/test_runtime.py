@@ -394,6 +394,23 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(state['phase'],'normal')
         self.assertTrue(seen)
 
+    def test_registered_test_source_is_available_without_project_root_escape(self):
+        with tempfile.TemporaryDirectory() as outside:
+            source=pathlib.Path(outside)/'acceptance.py'
+            source.write_text("EXPECTED = 'Keyboard-A'\\n")
+            self.project.cfg['test']=f'python3 {source} test'
+            rc,out=self.project.read_test_source()
+            self.assertEqual(rc,0)
+            self.assertIn("EXPECTED = 'Keyboard-A'",out)
+
+    def test_registered_test_source_rejects_sensitive_path(self):
+        with tempfile.TemporaryDirectory() as outside:
+            source=pathlib.Path(outside)/'.env.py'
+            source.write_text("SECRET = 'no'\\n")
+            self.project.cfg['test']=f'python3 {source} test'
+            rc,out=self.project.read_test_source()
+            self.assertNotEqual(rc,0)
+
     def test_post_edit_repair_rejects_unrelated_read(self):
         self.project.cfg['test']='registered-failing-test'
         (self.root/'calc.py').write_text('value = 1\n')
