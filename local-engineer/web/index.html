@@ -89,22 +89,36 @@ form.addEventListener("submit",async e=>{
     if(!r.body) throw new Error("ストリーミングに対応していないブラウザです");
     const reader=r.body.getReader(), decoder=new TextDecoder();
     let buffer="";
-    while(true){
+    const handleEvent=(event)=>{
+      const dataLines=event.split(/\r?\n/).filter(line=>line.startsWith("data:"));
+      if(!dataLines.length) return false;
+      const payload=dataLines.map(line=>line.slice(5).trimStart()).join("\n");
+      if(payload==="[DONE]") return true;
+      const data=JSON.parse(payload);
+      if(data.error) throw new Error(data.error+(data.detail?"\n"+data.detail:""));
+      if(data.done) return true;
+      if(data.delta){
+        if(!answer) answer="";
+        answer+=data.delta;
+        bubble.textContent=answer;
+        messagesEl.scrollTop=messagesEl.scrollHeight;
+      }
+      return false;
+    };
+    let streamDone=false;
+    while(!streamDone){
       const {value,done}=await reader.read();
       if(done) break;
       buffer+=decoder.decode(value,{stream:true});
-      const lines=buffer.split("\n"); buffer=lines.pop()||"";
-      for(const line of lines){
-        if(!line.trim()) continue;
-        const data=JSON.parse(line);
-        if(data.error) throw new Error(data.error+(data.detail?"\n"+data.detail:""));
-        if(data.delta){
-          if(!answer) answer="";
-          answer+=data.delta;
-          bubble.textContent=answer;
-          messagesEl.scrollTop=messagesEl.scrollHeight;
-        }
+      const events=buffer.split(/\r?\n\r?\n/);
+      buffer=events.pop()||"";
+      for(const event of events){
+        if(handleEvent(event)){streamDone=true;break}
       }
+    }
+    if(!streamDone){
+      buffer+=decoder.decode();
+      if(buffer.trim()) handleEvent(buffer);
     }
     if(!answer) answer="(回答がありませんでした)";
     bubble.textContent=answer;
