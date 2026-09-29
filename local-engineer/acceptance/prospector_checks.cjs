@@ -44,6 +44,28 @@ function render(peers, mask) {
   context.renderState({revision:1,activeMask:mask,peers});
   return elements.get('name').textContent;
 }
+function parse(lines) {
+  const context = {};
+  vm.createContext(context); vm.runInContext(js,context);
+  return context.parseState(lines);
+}
+function renderParsed(lines) {
+  const state = parse(lines);
+  assert.ok(state);
+  const elements = new Map();
+  const element = key => {
+    if (!elements.has(key)) elements.set(key,{textContent:'',classList:{toggle(){}},querySelector:s=>element(key+s)});
+    return elements.get(key);
+  };
+  const context = {revisionEl:element('revision'),maskEl:element('mask'),activeName:element('name'),activeLayer:element('layer'),document:{querySelector:s=>element(s)}};
+  vm.createContext(context); vm.runInContext(js,context);
+  context.renderState(state);
+  return {
+    state,
+    name: elements.get('name').textContent,
+    layer: elements.get('layer').textContent,
+  };
+}
 const tests = [
   ['later ready peer overrides earlier saved peer',()=>assert.equal(render([peer(0,'Saved',false),peer(1,'Ready',true)],3),'Ready')],
   ['ready peer remains selected when saved peer follows',()=>assert.equal(render([peer(1,'Ready',true),peer(0,'Saved',false)],3),'Ready')],
@@ -51,6 +73,25 @@ const tests = [
   ['inactive ready peer is not hero',()=>assert.equal(render([peer(0,'Inactive',true),peer(1,'Saved',false)],2),'Saved')],
   ['no active peer',()=>assert.equal(render([peer(0,'Inactive',true)],0),'No active keyboard')],
   ['first ready peer remains stable',()=>assert.equal(render([peer(0,'First',true),peer(1,'Second',true)],3),'First')],
+  ['protocol data flows through parseState to renderState',()=>{
+    const result = renderParsed([
+      'STATE\t1\t7\t3',
+      'PEER\t0\t1\t1\t80\t70\t-40\t2\tBLE\tKeyboard-A\tGAMING',
+      'PEER\t1\t1\t0\t60\t-1\t-55\t1\tUSB\tKeyboard-B\tBASE',
+    ]);
+    assert.equal(result.state.revision,7);
+    assert.equal(result.state.activeMask,3);
+    assert.equal(result.state.peers[0].slot,0);
+    assert.equal(result.state.peers[0].ready,true);
+    assert.equal(result.state.peers[0].output,'BLE');
+    assert.equal(result.state.peers[0].name,'Keyboard-A');
+    assert.equal(result.state.peers[0].layer,'GAMING');
+    assert.equal(result.state.peers[1].ready,false);
+    assert.equal(result.state.peers[1].output,'USB');
+    assert.equal(result.state.peers[1].name,'Keyboard-B');
+    assert.equal(result.name,'Keyboard-A');
+    assert.equal(result.layer,'GAMING');
+  }],
 ];
 let failures=0;
 for (const [name,test] of tests) {try {test();console.log('PASS '+name);} catch(e) {failures++;console.error('FAIL '+name+': '+e.message);}}
