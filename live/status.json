@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-09-30T04:30:22+00:00",
+  "published_at": "2026-09-30T04:30:39+00:00",
   "session": "20260930-132406-410c57",
   "status": "running",
   "phase": "normal",
-  "round": 3,
+  "round": 4,
   "repair_attempt": 0,
   "last_tool": "",
-  "target": "",
-  "next_action": "Repair the recorded build/test failure. All investigation tools remain available.",
+  "target": "windows-app/src/main.ts",
+  "next_action": "Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. Use discovery only for one exact missing fact needed to identify that edit; otherwise report a blocker.",
   "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 6 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                 \u001b[39m\u001b[1m\u001b[2m0.40 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.27 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[35massets/index-eiN9ezRQ.css  \u001b[39m\u001b[1m\u001b[2m3.29 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 1.21 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-Cbv6EbCe.js   \u001b[39m\u001b[1m\u001b[2m6.22 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 2.23 kB\u001b[22m\n\u001b[32m✓ built in 130ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-OKqMV7\\dist. Native Tauri packaging not included.\n",
   "test_status": "exit=1\nPASS later ready peer overrides earlier saved peer\nPASS ready peer remains selected when saved peer follows\nPASS saved fallback with no ready peer\nPASS inactive ready peer is not hero\nPASS no active peer\nPASS first ready peer remains stable\nFAIL protocol data flows through parseState to renderState: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'GAMING'\n- 'Keyboard-A'\n\n",
-  "hypothesis": "",
+  "hypothesis": "The Level 8 protocol mapping regression is caused by the `name` field in `parseState` reading the wrong tab-delimited column. The source currently sets `name: p[10]` and `layer: p[10]`, but the failing assertion expects the rendered name to be `Keyboard-A` while the actual value is `GAMING`. The task explicitly requires the minimal correction from `p[10]` to `p[9]` for the name field, which implies the name column is at index 9 and the layer column remains at index 10.",
   "files_modified": []
 }
