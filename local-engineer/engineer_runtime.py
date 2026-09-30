@@ -401,11 +401,21 @@ def _run_agent(m,project,task,resume=None):
            'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
     prior_reads=[]
     uncertain_edit=None
+    uncertain_edit_path=None
+    uncertain_edit_read_pending=False
+    def safe_edit_path(value):
+        try:
+            return m.safe_rel(value)
+        except (TypeError,ValueError):
+            return None
     if resume:
         old=json.loads(pathlib.Path(resume).read_text())
         pending=old.get('pending_tool') or {}
         if pending.get('name') in ('write_file','replace_text'):
             uncertain_edit=pending
+            pending_args=pending.get('args') or {}
+            if isinstance(pending_args,dict):
+                uncertain_edit_path=safe_edit_path(pending_args.get('path',''))
         expected_root=str(pathlib.Path(old['root']).resolve()) if project.transport=='local' else old['root']
         actual_root=str(pathlib.Path(project.root).resolve()) if project.transport=='local' else project.root
         if (expected_root,old['branch'],old['project']) != (actual_root,facts['branch'],project.name):
@@ -430,9 +440,9 @@ def _run_agent(m,project,task,resume=None):
         state['cache']={}  # Disk may have changed while the agent was away.
         if uncertain_edit:
             state['failed_attempts']=(state.get('failed_attempts',[])+[
-                uncertain_edit['name']+': interrupted edit outcome is uncertain; identical replay requires review'
+                uncertain_edit['name']+': interrupted edit outcome is uncertain; same-path retry requires review'
             ])[-5:]
-            state['next_action']='A file edit was interrupted after dispatch began, so its result is uncertain. Inspect the current target and do not repeat the identical edit request.'
+            state['next_action']='A file edit was interrupted after dispatch began, so its result is uncertain. Inspect the current target and do not edit that path until the outcome is understood.'
         state['generation']+=1
         # A checkpoint may contain a stale or contradictory hypothesis.  A resumed,
         # unedited failed verification gets a fresh, bounded reflection budget.
@@ -815,6 +825,11 @@ Never claim a test passed without a successful tool result. If blocked state the
             state['cache'][refreshed]='exit=%s\n%s'%(rc,m.clip(text))
         save()
         for _ in range(m.MAX_ROUNDS):
+            # A successful read only resolves the uncertain edit after its result
+            # has been sent to the model in the next request.
+            if uncertain_edit_read_pending:
+                uncertain_edit_path=None
+                uncertain_edit_read_pending=False
             state['rounds']+=1
             ollaya_observer.observe(state, task)
             if state.get('phase')=='post_edit_repair' and state.get('repair_force_reflection'):
@@ -977,9 +992,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                     repeats[key]=repeats.get(key,0)+1
                     state['pending_tool']={'name':fn,'args':args}
                     save()
-                    if (uncertain_edit and fn==uncertain_edit.get('name')
-                            and args==uncertain_edit.get('args')):
-                        result='exit=125\nPrevious edit outcome is uncertain; identical edit was not replayed. Inspect the current file and choose a safe next action.'
+                    if (uncertain_edit_path is not None
+                            and fn in ('write_file','replace_text')
+                            and safe_edit_path(args.get('path',''))==uncertain_edit_path):
+                        result='exit=125\nPrevious edit outcome is uncertain; same-path edit was not replayed. Inspect the current file and choose a safe next action.'
                     elif fn not in current_allowed_names:
                         result='exit=126\nTool is not enabled for this task mode'
                         tool_gate_violation=bool(state.get('experiment_required') or state.get('targeted_discovery_required') or state.get('phase')=='post_edit_repair')
@@ -1036,6 +1052,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                 if not result.startswith('exit=0'):
                     state['failed_attempts']=(state['failed_attempts']+[fn+': '+result[:700]])[-5:]
                 success=result.startswith('exit=0')
+                if (uncertain_edit_path is not None and fn=='read_file' and success
+                        and safe_edit_path(args.get('path',''))==uncertain_edit_path):
+                    uncertain_edit_read_pending=True
                 if fn in ('write_file','replace_text') and not success and state.get('phase')=='post_edit_repair':
                     state['repair_edit_failures']=state.get('repair_edit_failures',0)+1
                     state['repair_force_reflection']=True

@@ -238,7 +238,7 @@ class SafetyTests(unittest.TestCase):
             tool_error=next(message['content'] for message in reversed(payload['messages'])
                             if message.get('role')=='tool'
                             and message.get('tool_call_id')=='write1')
-            self.assertIn('identical edit was not replayed',tool_error)
+            self.assertIn('same-path edit was not replayed',tool_error)
             return done
 
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
@@ -251,7 +251,80 @@ class SafetyTests(unittest.TestCase):
         replayed=[call for call in resumed_dispatch.call_args_list
                   if call.args[1]=='write_file']
         self.assertEqual(len(replayed),0)
-        self.assertEqual((self.root/'code.py').read_text(),'agent version\nuser addition\n')
+        self.assertEqual((self.root/'code.py').read_text(),
+                         'agent version\nuser addition\n')
+
+    def test_resume_uncertain_edit_with_changed_content_preserves_user_addition(self):
+        (self.root/'.gitignore').write_text('code.py\n')
+        first_write={'choices':[{'message':{'tool_calls':[{'id':'write1','type':'function',
+            'function':{'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'agent version\n'})}}]}}]}
+        changed_write={'choices':[{'message':{'tool_calls':[{'id':'write2','type':'function',
+            'function':{'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'agent revised version\n'})}}]}}]}
+        read={'choices':[{'message':{'tool_calls':[{'id':'read1','type':'function',
+            'function':{'name':'read_file','arguments':json.dumps({'path':'code.py'})}}]}}]}
+        safe_write={'choices':[{'message':{'tool_calls':[{'id':'write3','type':'function',
+            'function':{'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'agent revised version\nuser addition\n'})}}]}}]}
+        done={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function',
+            'function':{'name':'finish_task','arguments':json.dumps({'report':'Resumed.'})}}]}}]}
+        original_dispatch=m.dispatch
+
+        def write_then_interrupt(project,name,args):
+            result=original_dispatch(project,name,args)
+            if name=='write_file' and result.startswith('exit=0'):
+                raise RuntimeError('simulated interruption after filesystem write')
+            return result
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',return_value=first_write), \
+             patch.object(m,'dispatch',side_effect=write_then_interrupt):
+            self.assertEqual(m.agent(self.project,'write code.py'),2)
+
+        checkpoint=next((m.STATE/'sessions').glob('*/working_state.json'))
+        interrupted=json.loads(checkpoint.read_text())
+        self.assertEqual(interrupted['status'],'interrupted')
+        self.assertEqual(interrupted['pending_tool']['name'],'write_file')
+        self.assertNotIn('code.py',interrupted['files_modified'])
+        with (self.root/'code.py').open('a') as user_file:
+            user_file.write('user addition\n')
+
+        resume_calls=[]
+        def resume_api(url,payload,timeout=600):
+            resume_calls.append(payload)
+            if 'tools' not in payload:
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'the inspected file already includes the user addition',
+                    'target_file':'code.py','expected_effect':'preserve the user addition',
+                    'smallest_edit':'write only the reviewed contents','missing_evidence':''})}}]}
+            if len(resume_calls)==1:
+                return changed_write
+            if len(resume_calls)==2:
+                error=next(message['content'] for message in reversed(payload['messages'])
+                           if message.get('role')=='tool'
+                           and message.get('tool_call_id')=='write2')
+                self.assertIn('same-path edit was not replayed',error)
+                return read
+            if len(resume_calls)==4:
+                return safe_write
+            return done
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=resume_api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(0,'test ok')), \
+             patch.object(m,'dispatch',wraps=original_dispatch) as resumed_dispatch:
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+
+        replayed=[call for call in resumed_dispatch.call_args_list
+                  if call.args[1]=='write_file']
+        self.assertEqual(len(replayed),1)
+        self.assertEqual(replayed[0].args[2]['content'],
+                         'agent revised version\nuser addition\n')
+        self.assertEqual((self.root/'code.py').read_text(),
+                         'agent revised version\nuser addition\n')
+
 
     def test_command_bypasses_rejected(self):
         for command in ('git branch -D work','python3 -c "print(1)"','sed -i s/a/b/ x','git reset --hard','bash bad.sh','git diff --output=x','git status; rm -rf .','cargo build --config bad'):
