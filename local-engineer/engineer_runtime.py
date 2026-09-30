@@ -309,12 +309,14 @@ def preflight(project):
         rc,out=project.exec(cmd,30)
         if rc: raise RuntimeError('preflight '+key+': '+out[:1000])
         facts[key]=out.strip()
+    rc,ignored=project.exec('git ls-files --others --ignored --exclude-standard',30)
+    if rc: raise RuntimeError('preflight ignored files: '+ignored[:1000])
     if facts['root'] != project.root:
         project.root=facts['root']
     preferred=project.cfg.get('preferred_branch')
     if preferred and preferred != facts['branch']:
         raise RuntimeError('expected branch %s; found %s; checkout left untouched'%(preferred,facts['branch']))
-    project.initial_dirty=set((facts['dirty']+'\n'+facts['staged_files']).splitlines())
+    project.initial_dirty=set((facts['dirty']+'\n'+facts['staged_files']+'\n'+ignored).splitlines())
     facts['instructions']={}
     for path in ('AGENTS.md','README.md'):
         rc,text=project.read_file(path,1,100)
@@ -466,6 +468,12 @@ def _run_agent(m,project,task,resume=None):
         task=state['objective']
         state['status']='running'
         project.agent_modified=set()
+        if uncertain_edit_path and old.get('backup_root'):
+            original=pathlib.Path(old['backup_root'])/uncertain_edit_path
+            if original.is_file() and original.stat().st_size==0:
+                # The interrupted edit created this ignored file after the prior
+                # preflight; do not mistake it for a pre-existing user file.
+                project.agent_modified.add(uncertain_edit_path)
         changed=[]
         for path in state['files_modified']:
             m.safe_rel(path)

@@ -43,6 +43,18 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual((self.root/'code.py').read_text(),'user addition\nreturn a + b\n')
         self.assertEqual((self.project.backup_root/'code.py').read_text(),'user addition\nreturn a - b\n')
 
+    def test_ignored_preexisting_file_should_block_full_overwrite(self):
+        (self.root/'.gitignore').write_text('local-settings.json\n')
+        target=self.root/'local-settings.json'
+        target.write_text('{"user_value":"preserve me"}\n')
+        self.project.backup_root=self.root/'backup'
+        preflight(self.project)
+        rc,_=self.project.write_file('local-settings.json','{"agent_value":"overwrite"}\n')
+        self.assertEqual(target.read_text(),'{"user_value":"preserve me"}\n',
+            'write_file overwrote a pre-existing ignored user file')
+        self.assertEqual(rc,126,
+            'a pre-existing ignored user file should require an exact edit, not full overwrite')
+
     def test_symlink_escape(self):
         with tempfile.TemporaryDirectory() as outside:
             (self.root/'escape').symlink_to(outside,target_is_directory=True)
@@ -91,8 +103,6 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(state['final_report'],finish_report)
 
     def test_multiple_edits_in_one_response_run_before_first_result_returns_to_model(self):
-        (self.root/'.gitignore').write_text('code.py\n')
-        (self.root/'code.py').write_text('initial\n')
         first={'id':'first-edit','type':'function','function':{
             'name':'write_file','arguments':json.dumps({
                 'path':'code.py','content':'first edit\n'})}}
