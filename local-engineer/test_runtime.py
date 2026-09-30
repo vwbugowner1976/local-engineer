@@ -2,6 +2,7 @@ from pathlib import Path
 import importlib.util
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -738,6 +739,21 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(rc,0)
             self.assertIn("EXPECTED = 'Keyboard-A'",out)
 
+    def test_registered_test_source_resolves_relative_path_from_project_root(self):
+        source=self.root/'tests'/'checks.py'
+        source.parent.mkdir()
+        source.write_text("EXPECTED = 'project-relative test source'\\n")
+        self.project.cfg['test']='python3 tests/checks.py'
+        with tempfile.TemporaryDirectory() as outside:
+            previous_cwd=pathlib.Path.cwd()
+            try:
+                os.chdir(outside)
+                rc,out=self.project.read_test_source()
+            finally:
+                os.chdir(previous_cwd)
+        self.assertEqual(rc,0)
+        self.assertIn('project-relative test source',out)
+
     def test_registered_test_source_rejects_sensitive_path(self):
         with tempfile.TemporaryDirectory() as outside:
             source=pathlib.Path(outside)/'.env.py'
@@ -745,6 +761,18 @@ class SafetyTests(unittest.TestCase):
             self.project.cfg['test']=f'python3 {source} test'
             rc,out=self.project.read_test_source()
             self.assertNotEqual(rc,0)
+
+    def test_registered_test_source_rejects_symlink_to_sensitive_file(self):
+        sensitive=self.root/'.env'
+        sensitive.write_text('SECRET_VALUE = "do not expose"\\n')
+        source=self.root/'tests'/'checks.py'
+        source.parent.mkdir()
+        source.symlink_to(sensitive)
+        self.project.cfg['test']='python3 tests/checks.py'
+        rc,out=self.project.read_test_source()
+        self.assertEqual(rc,126)
+        self.assertIn('sensitive-looking path',out)
+        self.assertNotIn('do not expose',out)
 
     def test_post_edit_repair_rejects_unrelated_read(self):
         self.project.cfg['test']='registered-failing-test'

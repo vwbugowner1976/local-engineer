@@ -127,6 +127,22 @@ class Project:
             rc, out = self._remote('python3 -c ' + shlex.quote(py), 60)
         else:
             p = pathlib.Path(path)
+            if not p.is_absolute():
+                try:
+                    relative = safe_rel(path)
+                except ValueError as error:
+                    return 126, 'registered test source rejected: ' + str(error)
+                root = pathlib.Path(self.root).resolve()
+                p = (root/relative).resolve()
+                if root not in p.parents:
+                    return 126, 'registered test source rejected: path escapes project root'
+                resolved_parts = pathlib.PurePosixPath(p.as_posix()).parts
+                if any(
+                    part.lower().startswith('.env') or
+                    re.search(r'(secret|token|private[_-]?key|sign[_-]?seed|credentials?)', part, re.I)
+                    for part in resolved_parts
+                ):
+                    return 126, 'registered test source rejected: sensitive-looking path'
             if not p.exists():
                 return 2, 'file not found'
             lines = p.read_text(errors='replace').splitlines()
