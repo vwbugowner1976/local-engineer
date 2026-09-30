@@ -61,6 +61,113 @@ class SafetyTests(unittest.TestCase):
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',return_value=response):
             self.assertEqual(m.agent(self.project,'Explain Git state'),0)
 
+    def test_finish_tool_with_git_status_completes_from_same_response(self):
+        finish_report='Finish report from the mixed tool-call response.'
+        mixed={'choices':[{'message':{'tool_calls':[
+            {'id':'finish','type':'function','function':{'name':'finish_task',
+                'arguments':json.dumps({'report':finish_report})}},
+            {'id':'status','type':'function','function':{'name':'git_status',
+                'arguments':'{}'}}
+        ]}}]}
+        fallback={'choices':[{'message':{'content':'Fallback report after mixed calls.'}}]}
+        calls=[]
+
+        def api(url,payload,timeout=600):
+            calls.append(payload)
+            return mixed if len(calls)==1 else fallback
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api):
+            self.assertEqual(m.agent(self.project,'Explain repository state'),0)
+
+        self.assertEqual(len(calls),1)
+        event_file=next((m.STATE/'sessions').glob('*/events.jsonl'))
+        events=[json.loads(line) for line in event_file.read_text().splitlines()]
+        finish_event=next(event for event in events if event.get('tool')=='finish_task')
+        self.assertEqual(finish_event['result'],'final report requested')
+        self.assertFalse(any(event.get('tool')=='git_status' for event in events))
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['final_report'],finish_report)
+
+    def test_finish_tool_rejects_non_string_report_and_resumes(self):
+        invalid={'choices':[{'message':{'tool_calls':[{'id':'bad','type':'function',
+            'function':{'name':'finish_task','arguments':'{"report":7}'}}]}}]}
+        valid={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function',
+            'function':{'name':'finish_task','arguments':json.dumps({'report':'Retry completed.'})}}]}}]}
+        calls=[]
+        session_dir=None
+        retry_tool_results=[]
+
+        def api(url,payload,timeout=600):
+            nonlocal session_dir
+            calls.append(payload)
+            if len(calls)==1:
+                return invalid
+            session_dir=next((m.STATE/'sessions').glob('*/working_state.json')).parent
+            checkpoint=session_dir/'working_state.json'
+            self.assertTrue(checkpoint.is_file())
+            persisted=json.loads(checkpoint.read_text())
+            self.assertEqual(persisted['status'],'running')
+            self.assertIsNone(persisted.get('pending_tool'))
+            retry_context='\n'.join(message.get('content','') or '' for message in payload['messages'])
+            self.assertIn('finish_task: malformed tool arguments',retry_context)
+            self.assertIn('report must be a string',retry_context)
+            retry_tool_results.extend(message for message in payload['messages']
+                                      if message.get('role')=='tool'
+                                      and message.get('tool_call_id')=='bad')
+            return valid
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api):
+            self.assertEqual(m.agent(self.project,'Explain repository state'),0)
+
+        self.assertEqual(len(calls),2)
+        final_state=json.loads((session_dir/'working_state.json').read_text())
+        self.assertEqual(final_state['status'],'completed')
+        self.assertIsNone(final_state.get('pending_tool'))
+        self.assertEqual(final_state['final_report'],'Retry completed.')
+        self.assertEqual(len(retry_tool_results),1)
+        self.assertIn('report must be a string',retry_tool_results[0]['content'])
+        events=(session_dir/'events.jsonl').read_text()
+        self.assertIn('Malformed finish_task arguments rejected:',events)
+
+    def test_malformed_tool_arguments_are_rejected_and_retry_persists_state(self):
+        malformed={'choices':[{'message':{'tool_calls':[{'id':'bad','type':'function',
+            'function':{'name':'replace_text','arguments':'{"path":"code.py","old":"old","new":"unterminated'}}]}}]}
+        retry={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function',
+            'function':{'name':'finish_task','arguments':json.dumps({'report':'Retry completed.'})}}]}}]}
+        calls=[]
+        session_dir=None
+
+        def api(url,payload,timeout=600):
+            nonlocal session_dir
+            calls.append(payload)
+            if len(calls)==1:
+                return malformed
+            session_dir=next((m.STATE/'sessions').glob('*/working_state.json')).parent
+            persisted=json.loads((session_dir/'working_state.json').read_text())
+            self.assertIsNone(persisted['pending_tool'])
+            messages=calls[-1]['messages']
+            tool_result=next(message['content'] for message in reversed(messages)
+                             if message.get('role')=='tool')
+            self.assertIn('Malformed tool arguments rejected:',tool_result)
+            self.assertIn('Unterminated string',tool_result)
+            return retry
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'replace_text') as execute_tool:
+            self.assertEqual(m.agent(self.project,'repair code.py'),0)
+
+        execute_tool.assert_not_called()
+        self.assertEqual(len(calls),2)
+        final_state=json.loads((session_dir/'working_state.json').read_text())
+        self.assertIsNone(final_state['pending_tool'])
+        self.assertEqual(final_state['status'],'completed')
+        self.assertIn('replace_text: malformed tool arguments',final_state['failed_attempts'][-1])
+        events=(session_dir/'events.jsonl').read_text()
+        self.assertIn('Malformed tool arguments rejected:',events)
+
     def test_resume_cli_uses_self_contained_checkpoint(self):
         checkpoint=self.root/'checkpoint.json'
         checkpoint.write_text(json.dumps({'project':'absent-from-registry','project_config':self.project.cfg,'objective':'continue'}))
@@ -84,6 +191,67 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual((self.root/'code.py').read_text(),'agent change\nuser addition\n')
         self.assertEqual((old_backup/'code.py').read_text(),'original\n')
         self.assertEqual((self.project.backup_root/'code.py').read_text(),'agent change\nuser addition\n')
+
+    def test_resume_reconciles_edit_interrupted_after_write_before_checkpoint(self):
+        (self.root/'.gitignore').write_text('code.py\n')
+        write={'choices':[{'message':{'tool_calls':[{'id':'write1','type':'function',
+            'function':{'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'agent version\n'})}}]}}]}
+        done={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function',
+            'function':{'name':'finish_task','arguments':json.dumps({'report':'Resumed.'})}}]}}]}
+        original_dispatch=m.dispatch
+        did_interrupt=False
+
+        def write_then_interrupt(project,name,args):
+            nonlocal did_interrupt
+            result=original_dispatch(project,name,args)
+            if name=='write_file' and result.startswith('exit=0') and not did_interrupt:
+                did_interrupt=True
+                raise RuntimeError('simulated interruption after filesystem write')
+            return result
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',return_value=write), \
+             patch.object(m,'dispatch',side_effect=write_then_interrupt):
+            self.assertEqual(m.agent(self.project,'write code.py'),2)
+
+        checkpoint=next((m.STATE/'sessions').glob('*/working_state.json'))
+        interrupted=json.loads(checkpoint.read_text())
+        self.assertEqual(interrupted['status'],'interrupted')
+        self.assertEqual(interrupted['pending_tool']['name'],'write_file')
+        self.assertNotIn('code.py',interrupted['files_modified'])
+        self.assertEqual((self.root/'code.py').read_text(),'agent version\n')
+
+        with (self.root/'code.py').open('a') as user_file:
+            user_file.write('user addition\n')
+
+        resume_calls=[]
+        def resume_api(url,payload,timeout=600):
+            resume_calls.append(payload)
+            if len(resume_calls)==1:
+                return write
+            latest=max((m.STATE/'sessions').glob('*/working_state.json'),
+                       key=lambda path:path.stat().st_mtime)
+            persisted=json.loads(latest.read_text())
+            self.assertIn('interrupted edit outcome is uncertain',
+                          '\n'.join(persisted['failed_attempts']))
+            tool_error=next(message['content'] for message in reversed(payload['messages'])
+                            if message.get('role')=='tool'
+                            and message.get('tool_call_id')=='write1')
+            self.assertIn('identical edit was not replayed',tool_error)
+            return done
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=resume_api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(0,'test ok')), \
+             patch.object(m,'dispatch',wraps=original_dispatch) as resumed_dispatch:
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+
+        replayed=[call for call in resumed_dispatch.call_args_list
+                  if call.args[1]=='write_file']
+        self.assertEqual(len(replayed),0)
+        self.assertEqual((self.root/'code.py').read_text(),'agent version\nuser addition\n')
 
     def test_command_bypasses_rejected(self):
         for command in ('git branch -D work','python3 -c "print(1)"','sed -i s/a/b/ x','git reset --hard','bash bad.sh','git diff --output=x','git status; rm -rf .','cargo build --config bad'):
@@ -394,6 +562,50 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(state['phase'],'normal')
         self.assertTrue(seen)
 
+    def test_post_edit_repair_instructions_match_active_tool_schema(self):
+        self.project.cfg['test']='registered-failing-test'
+        (self.root/'calc.py').write_text('value = 1\n')
+        digest=hashlib.sha256((self.root/'calc.py').read_bytes()).hexdigest()
+        checkpoint=self.root/'post-edit-prompt.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair value','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(self.root/'backup'),
+            'hypothesis':'value should become 2','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nactual 1 expected 2','generation':1,'cache':{}}))
+        repair_request={}
+
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name,'type':'function',
+                'function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+
+        def api(url,payload,timeout=600):
+            nonlocal repair_request
+            if 'tools' not in payload:
+                if payload['messages'][0]['content'].startswith('Report'):
+                    return {'choices':[{'message':{'content':'Result: repaired.'}}]}
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'value 1 must become 2','target_file':'calc.py',
+                    'expected_effect':'the test expects value 2','smallest_edit':'replace 1 with 2',
+                    'missing_evidence':'','targeted_reads':[]})}}]}
+            repair_request=payload
+            return tool('replace_text',{'path':'calc.py','old':'value = 1','new':'value = 2'})
+
+        tests=iter([(1,'actual 1 expected 2'),(0,'test ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+
+        active_names={entry['function']['name'] for entry in repair_request['tools']}
+        self.assertNotIn('update_working_state',active_names)
+        system=repair_request['messages'][0]['content']
+        user=repair_request['messages'][1]['content']
+        self.assertNotIn('Use update_working_state to save',system)
+        self.assertNotIn('Use update_working_state to save',user)
+        self.assertIn('update_working_state is also unavailable',user)
+        self.assertIn('checkpoint persistence is automatic',user)
+
     def test_registered_test_source_is_available_without_project_root_escape(self):
         with tempfile.TemporaryDirectory() as outside:
             source=pathlib.Path(outside)/'acceptance.py'
@@ -508,13 +720,26 @@ class SafetyTests(unittest.TestCase):
                 'targeted_reads':['calc.py']})}}]},
             {'choices':[{'message':{'tool_calls':[{'id':'read1','type':'function',
                 'function':{'name':'read_file','arguments':json.dumps({'path':str(self.root/'calc.py')})}}]}}]},
-            {'choices':[{'message':{'content':'blocked'}}]}
+            {'choices':[{'message':{'tool_calls':[{'id':'repair','type':'function',
+                'function':{'name':'replace_text','arguments':json.dumps({
+                    'path':'calc.py','old':'value = 1','new':'value = 2'})}}]}}]},
+            {'choices':[{'message':{'content':'Result: repaired and verified.'}}]}
         ]
         def api(*args,**kwargs):
             return responses.pop(0)
-        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'),              patch.object(m,'get_json',side_effect=api),              patch.object(self.project,'build',return_value=(0,'build ok')),              patch.object(self.project,'command',return_value=(1,'actual 1 expected 2')):
+        tests=iter([(1,'actual 1 expected 2'),(0,'test ok')])
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
             result=m.agent(self.project,'ignored',str(state_path))
-        self.assertIn(result,(1,2))
+        self.assertEqual(result,0)
+        state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
+        self.assertEqual(state['status'],'completed')
+        self.assertNotEqual(state['status'],'interrupted')
+        self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
+        events=next((m.STATE/'sessions').glob('*/events.jsonl')).read_text()
+        self.assertIn('POST_EDIT_REPAIR read rejected: path must be project-relative and stay inside the project',events)
 
     def test_post_edit_repair_cached_read_cannot_bypass_budget_or_state_update_gate(self):
         self.project.cfg['test']='registered-failing-test'
