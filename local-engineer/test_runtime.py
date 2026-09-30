@@ -89,6 +89,56 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['final_report'],finish_report)
 
+    def test_multiple_edits_in_one_response_run_before_first_result_returns_to_model(self):
+        (self.root/'.gitignore').write_text('code.py\n')
+        (self.root/'code.py').write_text('initial\n')
+        first={'id':'first-edit','type':'function','function':{
+            'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'first edit\n'})}}
+        second={'id':'second-edit','type':'function','function':{
+            'name':'write_file','arguments':json.dumps({
+                'path':'code.py','content':'second edit\n'})}}
+        batch={'choices':[{'message':{'tool_calls':[first,second]}}]}
+        second_batch={'choices':[{'message':{'tool_calls':[second]}}]}
+        final={'choices':[{'message':{'content':'Both edits were verified.'}}]}
+        sequence=[]
+
+        def api(url,payload,timeout=600):
+            carries_first_result=any(message.get('role')=='tool'
+                and message.get('tool_call_id')=='first-edit'
+                for message in payload['messages'])
+            sequence.append(('model_request',carries_first_result))
+            request_count=len([event for event in sequence if event[0]=='model_request'])
+            if request_count==1:
+                return batch
+            if request_count==2:
+                return second_batch
+            return final
+
+        original_dispatch=m.dispatch
+        def observed_dispatch(project,name,args):
+            if name=='write_file':
+                sequence.append(('edit_dispatch',args['content']))
+            return original_dispatch(project,name,args)
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(m,'dispatch',side_effect=observed_dispatch), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',return_value=(0,'test ok')):
+            self.assertEqual(m.agent(self.project,'edit code.py'),0)
+
+        first_edit_index=next(i for i,event in enumerate(sequence)
+                              if event==('edit_dispatch','first edit\n'))
+        second_edit_index=next(i for i,event in enumerate(sequence)
+                               if event==('edit_dispatch','second edit\n'))
+        result_seen_index=next((i for i,event in enumerate(sequence)
+                                if event==('model_request',True)
+                                and i<second_edit_index),None)
+        self.assertIsNotNone(result_seen_index,
+            'second edit ran before the first edit result was returned to the model')
+        self.assertLess(first_edit_index,result_seen_index)
+
     def test_finish_tool_rejects_non_string_report_and_resumes(self):
         invalid={'choices':[{'message':{'tool_calls':[{'id':'bad','type':'function',
             'function':{'name':'finish_task','arguments':'{"report":7}'}}]}}]}

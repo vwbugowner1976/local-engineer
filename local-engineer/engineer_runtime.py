@@ -939,7 +939,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                 return 0 if state['status']=='completed' else 2
             bundle=[{'role':'assistant','content':msg.get('content'),'tool_calls':calls}]
             edited_this_round=False
-            for call in calls:
+            defer_edit_batch=False
+            for call_index,call in enumerate(calls):
                 fn=call['function']['name']
                 raw_args=call['function'].get('arguments') or '{}'
                 try:
@@ -1153,9 +1154,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                 state['supporting_evidence']=(str(state['supporting_evidence'])+'\n'+fn+': '+summary)[-2400:]
                 bundle.append({'role':'tool','tool_call_id':call['id'],'content':result})
                 save()
+                if fn in ('write_file','replace_text') and success and len(calls)>1:
+                    # Return the successful edit result before dispatching stale
+                    # follow-up calls from the same model response.
+                    bundle[0]['tool_calls']=calls[:call_index+1]
+                    defer_edit_batch=True
+                    break
             # Keep complete assistant/tool bundles; never orphan tool messages.
             recent=bundle
-            if edited_this_round: verify_now()
+            if edited_this_round and not defer_edit_batch: verify_now()
             if max(repeats.values(),default=0)>=4:
                 state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
                 save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
