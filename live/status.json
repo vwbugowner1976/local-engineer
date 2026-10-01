@@ -1,17 +1,17 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-10-01T02:51:42+00:00",
+  "published_at": "2026-10-01T02:52:00+00:00",
   "session": "20261001-113110-668efb",
   "status": "running",
   "phase": "post_edit_repair",
-  "round": 8,
+  "round": 9,
   "repair_attempt": 1,
   "last_tool": "",
-  "target": "",
-  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
+  "target": "windows-app/src/main.ts",
+  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
   "build_status": "exit=0\nPASS: Windows App TypeScript compiler, strict/noEmit.\n\u001b[36mvite v7.3.6 \u001b[32mbuilding client environment for production...\u001b[36m\u001b[39m\ntransforming...\n\u001b[32m✓\u001b[39m 6 modules transformed.\nrendering chunks...\ncomputing gzip size...\n\u001b[2mdist/\u001b[22m\u001b[32mindex.html                 \u001b[39m\u001b[1m\u001b[2m0.40 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 0.27 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[35massets/index-eiN9ezRQ.css  \u001b[39m\u001b[1m\u001b[2m3.29 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 1.21 kB\u001b[22m\n\u001b[2mdist/\u001b[22m\u001b[36massets/index-Cbv6EbCe.js   \u001b[39m\u001b[1m\u001b[2m6.22 kB\u001b[22m\u001b[1m\u001b[22m\u001b[2m │ gzip: 2.23 kB\u001b[22m\n\u001b[32m✓ built in 128ms\u001b[39m\nPASS: Vite production bundle at C:\\Users\\G9\\AppData\\Local\\Temp\\prospector-bonsai-build-mvYlph\\dist. Native Tauri packaging not included.\n",
   "test_status": "exit=1\nPASS later ready peer overrides earlier saved peer\nPASS ready peer remains selected when saved peer follows\nPASS saved fallback with no ready peer\nPASS inactive ready peer is not hero\nPASS no active peer\nPASS first ready peer remains stable\nFAIL protocol data flows through parseState to renderState: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'GAMING'\n- 'Keyboard-A'\n\n",
-  "hypothesis": "The failing test expects the rendered active keyboard name to be 'Keyboard-A', but the current code is rendering 'GAMING'. This indicates that the source code is incorrectly mapping or selecting the active peer's name (likely using a hardcoded value or the wrong field, such as 'profile' or 'layer' instead of 'name'). The fix should ensure that the active peer's 'name' field is correctly used to populate the '#active-name' element.",
+  "hypothesis": "The previous edit did not change the rendered active name because the source still selects the wrong field (e.g., 'profile' or 'layer') instead of 'name' for the active peer, or the edit was not applied to the correct rendering path. The test expects 'Keyboard-A' but gets 'GAMING', indicating the active peer's 'name' field is not being used.",
   "files_modified": [
     "windows-app/src/main.ts"
   ]
