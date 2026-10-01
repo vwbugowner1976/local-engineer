@@ -1,17 +1,17 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-10-01T03:12:28+00:00",
+  "published_at": "2026-10-01T03:12:45+00:00",
   "session": "20261001-121145-e2a410",
   "status": "running",
   "phase": "post_edit_repair",
-  "round": 14,
+  "round": 15,
   "repair_attempt": 4,
   "last_tool": "",
   "target": "windows-app/src/main.ts",
-  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
+  "next_action": "Post-edit repair hypothesis is actionable: make the smallest follow-up edit, then rerun registered build/test. Do not broaden discovery.",
   "build_status": "exit=1\nAn object literal cannot have multiple properties with the same name.\n",
   "test_status": "exit=1\nPASS later ready peer overrides earlier saved peer\nPASS ready peer remains selected when saved peer follows\nPASS saved fallback with no ready peer\nPASS inactive ready peer is not hero\nPASS no active peer\nPASS first ready peer remains stable\nFAIL protocol data flows through parseState to renderState: Expected values to be strictly equal:\n\nfalse !== true\n\n",
-  "hypothesis": "The current edit shifted the protocol field mapping but did not remove the duplicate 'name' property from the peer object literal, so TypeScript still fails. The test failure changed from a wrong name to a wrong ready flag, indicating the field indices are still misaligned: p[3] is the name, p[4] is the ready flag, and p[5] is centralBattery, not p[4].",
+  "hypothesis": "The previous edit shifted the ready flag to p[4] and added name from p[3], but the protocol line format is actually: slot, bonded, ready, centralBattery, peripheralBattery, rssi (no name field). The duplicate 'name' property error persists because the object literal still has conflicting fields, and the test failure (false !== true) indicates the ready flag is being read from the wrong index. The correct format should be: p[1]=slot, p[2]=bonded, p[3]=ready, p[4]=centralBattery, p[5]=peripheralBattery, p[6]=rssi.",
   "files_modified": [
     "windows-app/src/main.ts"
   ]
