@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse, base64, datetime as dt, json, os, pathlib, re, shlex, subprocess, sys, urllib.request, urllib.error
+from zmk_support import detect_zmk_version
 
 HOME = pathlib.Path.home()
 CFG = pathlib.Path(os.environ.get('LOCAL_ENGINEER_CONFIG', HOME/'.config/local-engineer/projects.json'))
@@ -209,6 +210,14 @@ class Project:
         if not p.exists(): return 2, ''
         return 0, p.read_text(errors='replace')
 
+    def zmk_version_info(self):
+        manifests = {}
+        for path in ('config/west.yml', 'west.yml'):
+            rc, text = self._raw_read(path)
+            if rc == 0:
+                manifests[path] = text
+        return detect_zmk_version(manifests)
+
     def _backup(self, path, original):
         if path in self.backed_up: return
         dest = self.backup_root/path
@@ -316,6 +325,7 @@ def tool_defs(phase='discovery'):
     if phase == 'force_action':
         return edit_verify
     common = list(edit_verify)
+    common.insert(2, f('inspect_zmk_project','Inspect west manifests and report an evidence-backed ZMK version. Unknown revisions remain ZMK_VERSION_UNKNOWN.',{},[]))
     common.insert(2, f('read_file','Read contiguous source lines. Use search match line numbers for start_line; do not always start at 1. Follow the continuation line if output is bounded.',{'path':{'type':'string'},'start_line':{'type':'integer'},'end_line':{'type':'integer'}},['path']))
     if phase == 'post_edit_repair':
         common.insert(3, f('read_test_source','Read the registered test script as verification evidence. Only the script directly registered by the project test command is available.',{'start_line':{'type':'integer'},'end_line':{'type':'integer'}},[]))
@@ -329,6 +339,13 @@ def dispatch(project, name, args):
     try:
         if name == 'git_status': rc,out = project.exec('git status --short --branch',60)
         elif name == 'git_diff': rc,out = project.exec('git diff -- .',60)
+        elif name == 'inspect_zmk_project':
+            info=project.zmk_version_info()
+            rc=0
+            out=(f'ZMK_VERSION: {info.version}\n'
+                 f'revision: {info.revision or "unknown"}\n'
+                 f'source: {info.source or "unknown"}\n'
+                 f'reason: {info.reason or "explicit supported ZMK revision"}')
         elif name == 'list_files': rc,out = project.list_files(args.get('depth',3))
         elif name == 'search_text': rc,out = project.search(args['pattern'], args.get('glob',''))
         elif name == 'read_file': rc,out = project.read_file(args['path'], args.get('start_line',1), args.get('end_line',260))

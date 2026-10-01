@@ -37,6 +37,7 @@ local-engineer projects
 local-engineer discover
 local-engineer build prospector
 local-engineer build rmk-pg1kb
+local-engineer inspect prospector "Check the registered project facts and relevant source before proposing a change"
 ```
 
 Override the SSH host with `LOCAL_ENGINEER_SSH_HOST` or edit `~/.config/local-engineer/projects.json`.
@@ -96,6 +97,12 @@ SSH projects additionally require `runtime_dir` on the destination containing
 SSH authentication and host resolution must already work; this program does not
 modify credentials or SSH configuration. WSL can also run the same Python CLI
 with `BONSAI_API_BASE` pointing at an authenticated SSH local forward.
+
+For ZMK projects, the agent can inspect `config/west.yml` or `west.yml` and
+reports v0.3/v0.4 only when the ZMK project's revision explicitly identifies
+that release family. Branch names and commit hashes without release evidence are
+reported as `ZMK_VERSION_UNKNOWN`; the agent must not select a version-specific
+environment from an unknown result.
 
 Commands are exact trusted registry commands or limited read-only Git / Python
 test invocations. Builds/tests execute project code: this is a guardrail, not an

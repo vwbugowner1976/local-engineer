@@ -85,6 +85,22 @@ class SafetyTests(unittest.TestCase):
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',return_value=response):
             self.assertEqual(m.agent(self.project,'Explain Git state'),0)
 
+    def test_inspect_zmk_project_reports_version_from_its_west_manifest(self):
+        manifest=self.root/'config'/'west.yml'
+        manifest.parent.mkdir()
+        manifest.write_text('''manifest:\n  projects:\n    - name: zmk\n      revision: v0.4.0\n''')
+
+        result=m.dispatch(self.project,'inspect_zmk_project',{})
+
+        self.assertIn('exit=0',result)
+        self.assertIn('ZMK_VERSION: v0.4',result)
+        self.assertIn('revision: v0.4.0',result)
+        self.assertIn('source: config/west.yml',result)
+        tool_names={tool['function']['name'] for tool in m.tool_defs('discovery')}
+        self.assertIn('inspect_zmk_project',tool_names)
+        repair_tool_names={tool['function']['name'] for tool in m.tool_defs('post_edit_repair')}
+        self.assertIn('inspect_zmk_project',repair_tool_names)
+
     def test_finish_tool_with_git_status_completes_from_same_response(self):
         finish_report='Finish report from the mixed tool-call response.'
         mixed={'choices':[{'message':{'tool_calls':[
