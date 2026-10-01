@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -42,6 +43,16 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(self.project.replace_text('code.py','return a - b','return a + b')[0],0)
         self.assertEqual((self.root/'code.py').read_text(),'user addition\nreturn a + b\n')
         self.assertEqual((self.project.backup_root/'code.py').read_text(),'user addition\nreturn a - b\n')
+
+    def test_replace_text_rejects_noop_replacement(self):
+        target=self.root/'code.py'
+        target.write_text('activeName.textContent = heroPeer?.name;\n')
+        self.project.backup_root=self.root/'backup'
+        self.project.agent_modified=set()
+        rc,_=self.project.replace_text('code.py','activeName.textContent','activeName.textContent')
+        self.assertNotEqual(rc,0,'a no-op replacement must not be reported as a successful edit')
+        self.assertEqual(target.read_text(),'activeName.textContent = heroPeer?.name;\n')
+        self.assertNotIn('code.py',self.project.agent_modified)
 
     def test_ignored_preexisting_file_should_block_full_overwrite(self):
         (self.root/'.gitignore').write_text('local-settings.json\n')
@@ -228,6 +239,64 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('replace_text: malformed tool arguments',final_state['failed_attempts'][-1])
         events=(session_dir/'events.jsonl').read_text()
         self.assertIn('Malformed tool arguments rejected:',events)
+
+    def test_malformed_tool_error_survives_api_500_interruption_and_resume(self):
+        target=self.root/'code.py'
+        target.write_text('value = 1\\n')
+        self.project.backup_root=self.root/'backup'
+        self.project.agent_modified=set()
+        noop={'choices':[{'message':{'tool_calls':[{'id':'noop','type':'function',
+            'function':{'name':'replace_text','arguments':json.dumps({'path':'code.py',
+                'old':'value = 1','new':'value = 1'})}}]}}]}
+        malformed={'choices':[{'message':{'tool_calls':[{'id':'bad-json','type':'function',
+            'function':{'name':'write_file','arguments':'{"path":"code.py","content":"unterminated'}}]}}]}
+        completed={'choices':[{'message':{'tool_calls':[{'id':'done','type':'function',
+            'function':{'name':'finish_task','arguments':json.dumps({'report':'Resumed after API outage.'})}}]}}]}
+        requests=[]
+        session_dir=None
+
+        def first_run(url,payload,timeout=600):
+            nonlocal session_dir
+            requests.append(payload)
+            if len(requests)==1:
+                return noop
+            if len(requests)==2:
+                previous=[message for message in payload['messages'] if message.get('role')=='tool']
+                self.assertTrue(previous)
+                self.assertIn('replacement must change',previous[-1]['content'])
+                return malformed
+            raise urllib.error.HTTPError(url,500,'temporary model failure',{},None)
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=first_run), patch('engineer_runtime.time.sleep'):
+            self.assertEqual(m.agent(self.project,'repair code.py'),2)
+        session_dir=next((m.STATE/'sessions').glob('*/working_state.json')).parent
+        checkpoint=session_dir/'working_state.json'
+        interrupted=json.loads(checkpoint.read_text())
+        self.assertEqual(interrupted['status'],'interrupted')
+        self.assertIsNone(interrupted['pending_tool'])
+        self.assertTrue(interrupted.get('recent_messages'),
+            'the malformed-call assistant/tool result bundle must be checkpointed before requesting the model again')
+        tool_message=next(message for message in interrupted['recent_messages']
+                          if message.get('role')=='tool')
+        self.assertEqual(tool_message['tool_call_id'],'bad-json')
+        self.assertIn('Malformed tool arguments rejected:',tool_message['content'])
+
+        resumed_payloads=[]
+        def resume_run(url,payload,timeout=600):
+            resumed_payloads.append(payload)
+            return completed
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=resume_run):
+            self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
+        retry_messages=resumed_payloads[0]['messages']
+        self.assertTrue(any(message.get('role')=='tool' and message.get('tool_call_id')=='bad-json'
+                            and 'Malformed tool arguments rejected:' in message.get('content','')
+                            for message in retry_messages),
+            'resume must return the rejected tool call result to the model for a safe retry')
+        resumed_checkpoint=max((m.STATE/'sessions').glob('*/working_state.json'),
+                               key=lambda path:path.stat().st_mtime)
+        final=json.loads(resumed_checkpoint.read_text())
+        self.assertEqual(final['status'],'completed')
+        self.assertEqual(target.read_text(),'value = 1\\n')
 
     def test_resume_cli_uses_self_contained_checkpoint(self):
         checkpoint=self.root/'checkpoint.json'
@@ -749,6 +818,19 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(rc,0)
             self.assertIn("EXPECTED = 'Keyboard-A'",out)
 
+    def test_registered_python_wrapper_includes_its_delegated_cjs_test_source(self):
+        with tempfile.TemporaryDirectory() as outside:
+            wrapper=pathlib.Path(outside)/'acceptance.py'
+            wrapper.write_text("script = pathlib.Path(__file__).with_suffix('.cjs')\n")
+            delegated=wrapper.with_suffix('.cjs')
+            delegated.write_text("assert.equal(peer.name, 'Keyboard-A');\n")
+            self.project.cfg['test']=f'python3 {wrapper} test'
+            rc,out=self.project.read_test_source()
+        self.assertEqual(rc,0)
+        self.assertIn("with_suffix('.cjs')",out)
+        self.assertIn("assert.equal(peer.name, 'Keyboard-A')",out,
+            'post-edit evidence must include the test delegated by the registered wrapper')
+
     def test_registered_test_source_resolves_relative_path_from_project_root(self):
         source=self.root/'tests'/'checks.py'
         source.parent.mkdir()
@@ -861,6 +943,69 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['repair_targeted_reads_used'],2)
         self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
+
+    def test_post_edit_repair_allows_truncated_read_continuation_after_budget(self):
+        self.project.cfg['test']='registered-failing-test'
+        source=''.join('const filler_%03d = "%s";\n'%(i,'x'*80) for i in range(500))
+        source+='const wanted = 1;\n'
+        target=self.root/'calc.py'; target.write_text(source)
+        old_backup=self.root/'old-backup'; old_backup.mkdir()
+        (old_backup/'calc.py').write_text(source.replace('const wanted = 1;','const wanted = 0;'))
+        digest=hashlib.sha256(target.read_bytes()).hexdigest()
+        checkpoint=self.root/'repair-continuation.json'
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
+            'project_config':self.project.cfg,'objective':'repair','files_modified':['calc.py'],
+            'file_hashes':{'calc.py':digest},'backup_root':str(old_backup),
+            'hypothesis':'first edit','build_status':'exit=0\nbuild ok',
+            'test_status':'exit=1\nexpected 2 got 1','generation':1,'cache':{},
+            'files_inspected':['calc.py']}))
+        read_calls=0; third_read_schema=False; edit_sent=False
+        tests=iter([(1,'expected 2 got 1'),(0,'tests passed')])
+        def tool(name,args):
+            return {'choices':[{'message':{'tool_calls':[{'id':name+str(read_calls),
+                'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
+        def api(url,payload,timeout=600):
+            nonlocal read_calls,third_read_schema,edit_sent
+            if 'tools' not in payload:
+                return {'choices':[{'message':{'content':json.dumps({
+                    'hypothesis':'read the truncated changed source before editing',
+                    'target_file':'calc.py','expected_effect':'replace the stale value',
+                    'smallest_edit':'replace the exact stale value','missing_evidence':'source continuation',
+                    'targeted_reads':['calc.py']})}}]}
+            names={entry['function']['name'] for entry in payload['tools']}
+            if not edit_sent and read_calls<3:
+                if read_calls==2:
+                    third_read_schema='read_file' in names
+                    if not third_read_schema:
+                        edit_sent=True
+                        return tool('replace_text',{'path':'calc.py','old':'const wanted = 1;',
+                            'new':'const wanted = 2;'})
+                self.assertIn('read_file',names)
+                if read_calls==0:
+                    start=1
+                else:
+                    contents=[message.get('content','') for message in payload['messages']
+                              if message.get('role')=='tool']
+                    markers=re.findall(r'Continue with start_line=(\d+)',contents[-1])
+                    self.assertTrue(markers,'the previous read should provide a continuation line')
+                    start=int(markers[-1])
+                read_calls+=1
+                return tool('read_file',{'path':'calc.py','start_line':start,'end_line':260})
+            if not edit_sent:
+                edit_sent=True
+                return tool('replace_text',{'path':'calc.py','old':'const wanted = 1;',
+                    'new':'const wanted = 2;'})
+            return tool('finish_task',{'report':'The focused continuation repair passed build and test.'})
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(self.project,'build',return_value=(0,'build ok')), \
+             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
+            result=m.agent(self.project,'ignored',str(checkpoint))
+        self.assertEqual(result,0)
+        self.assertTrue(third_read_schema,
+            'a truncated same-file continuation should remain available after two initial repair reads')
+        self.assertEqual(read_calls,3)
+        self.assertIn('const wanted = 2;',target.read_text())
 
     def test_post_edit_repair_absolute_read_path_is_rejected_not_crashing(self):
         # Absolute paths are invalid in the repair phase; reject them as tool errors.

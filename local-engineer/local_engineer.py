@@ -118,12 +118,23 @@ class Project:
         start = max(1, int(start))
         end = max(start, min(int(end), start + 399))
         if self.transport == 'ssh':
-            py = (
-                "import pathlib; p=pathlib.Path(%r); "
-                "lines=p.read_text(errors='replace').splitlines(); "
-                "a=%d; b=%d; print('\\n'.join(f'{i+1}: {lines[i]}' "
-                "for i in range(a-1,min(b,len(lines)))))"
-            ) % (path, start, end)
+            py = "\n".join((
+                "import pathlib, re",
+                "p=pathlib.Path(%r)" % path,
+                "source=p.read_text(errors='replace'); lines=source.splitlines()",
+                "a=%d; b=%d" % (start, end),
+                "print('Registered test source: '+str(p))",
+                "print('\\n'.join(f'{i+1}: {lines[i]}' for i in range(a-1,min(b,len(lines)))))",
+                "if \"with_suffix('.cjs')\" in source or 'with_suffix(\\\".cjs\\\")' in source:",
+                "    q=p.with_suffix('.cjs'); resolved=q.resolve()",
+                "    sensitive=re.compile(r'(^|/)(\\.env($|\\.)|.*(secret|token|private[_-]?key|sign[_-]?seed|credentials?).*)',re.I)",
+                "    parts=resolved.as_posix().split('/')",
+                "    print('\\nDelegated test source: '+str(q))",
+                "    if any(sensitive.search('/'+part) for part in parts): print('registered sidecar rejected: sensitive-looking path')",
+                "    elif resolved.parent!=p.resolve().parent: print('registered sidecar rejected: path escapes wrapper directory')",
+                "    elif resolved.is_file(): print('\\n'.join(f'{i+1}: {line}' for i,line in enumerate(resolved.read_text(errors='replace').splitlines()) if a<=i+1<=b))",
+                "    else: print('registered sidecar not found')",
+            ))
             rc, out = self._remote('python3 -c ' + shlex.quote(py), 60)
         else:
             p = pathlib.Path(path)
@@ -145,8 +156,30 @@ class Project:
                     return 126, 'registered test source rejected: sensitive-looking path'
             if not p.exists():
                 return 2, 'file not found'
-            lines = p.read_text(errors='replace').splitlines()
-            out = '\\n'.join(f'{i+1}: {lines[i]}' for i in range(start-1, min(end, len(lines))))
+            source = p.read_text(errors='replace')
+            lines = source.splitlines()
+            out = 'Registered test source: '+str(p)+'\\n'+'\\n'.join(
+                f'{i+1}: {lines[i]}' for i in range(start-1, min(end, len(lines))))
+            if "with_suffix('.cjs')" in source or 'with_suffix(".cjs")' in source:
+                sidecar = p.with_suffix('.cjs')
+                resolved = sidecar.resolve()
+                resolved_parts = pathlib.PurePosixPath(resolved.as_posix()).parts
+                sensitive = any(
+                    part.lower().startswith('.env') or
+                    re.search(r'(secret|token|private[_-]?key|sign[_-]?seed|credentials?)', part, re.I)
+                    for part in resolved_parts
+                )
+                out += '\\nDelegated test source: '+str(sidecar)+'\\n'
+                if sensitive:
+                    out += 'registered sidecar rejected: sensitive-looking path'
+                elif resolved.parent != p.resolve().parent:
+                    out += 'registered sidecar rejected: path escapes wrapper directory'
+                elif resolved.is_file():
+                    sidecar_lines = resolved.read_text(errors='replace').splitlines()
+                    out += '\\n'.join(
+                        f'{i+1}: {sidecar_lines[i]}' for i in range(start-1, min(end, len(sidecar_lines))))
+                else:
+                    out += 'registered sidecar not found'
             rc = 0
         return rc, clip(out)
 
