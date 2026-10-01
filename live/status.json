@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-10-01T03:01:07+00:00",
+  "published_at": "2026-10-01T03:01:25+00:00",
   "session": "20261001-113110-668efb",
   "status": "running",
   "phase": "post_edit_repair",
   "round": 11,
-  "repair_attempt": 1,
+  "repair_attempt": 2,
   "last_tool": "",
   "target": "",
-  "next_action": "Run registered build/test immediately. If verification fails, refine this edit in POST_EDIT_REPAIR rather than restarting discovery.",
+  "next_action": "Post-edit verification failed. Refine the previous hypothesis from the current diff and failing verification; broad repository discovery is disabled.",
   "build_status": "exit=1\nAn object literal cannot have multiple properties with the same name.\n",
-  "test_status": "stale after edit",
+  "test_status": "exit=1\nPASS later ready peer overrides earlier saved peer\nPASS ready peer remains selected when saved peer follows\nPASS saved fallback with no ready peer\nPASS inactive ready peer is not hero\nPASS no active peer\nPASS first ready peer remains stable\nFAIL protocol data flows through parseState to renderState: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'GAMING'\n- 'Keyboard-A'\n\n",
   "hypothesis": "The previous edit did not change the failing behavior because the rendered '#active-name' still receives 'GAMING' instead of 'Keyboard-A'. The most likely cause is that the active peer selection logic is using the wrong field (e.g., 'profile' or 'layer') instead of 'name', or the parseState function is not correctly mapping the 'name' field from the protocol data.",
   "files_modified": [
     "windows-app/src/main.ts"
