@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-import argparse, base64, datetime as dt, json, os, pathlib, re, shlex, subprocess, sys, urllib.request, urllib.error
-from zmk_support import detect_zmk_version
+import argparse, base64, datetime as dt, hashlib, json, os, pathlib, re, shlex, subprocess, sys, urllib.request, urllib.error
+from zmk_support import (artifact_name, copy_uf2, discover_zmk_project,
+                         detect_zmk_version, select_destination)
 
 HOME = pathlib.Path.home()
 CFG = pathlib.Path(os.environ.get('LOCAL_ENGINEER_CONFIG', HOME/'.config/local-engineer/projects.json'))
@@ -61,6 +62,7 @@ class Project:
     def __init__(self, name, cfg, global_cfg):
         self.name = name
         self.cfg = cfg
+        self.global_cfg = global_cfg
         self.transport = cfg.get('transport', 'local')
         self.root = os.path.expanduser(cfg['root'])
         self.host = cfg.get('ssh_host') or global_cfg.get('settings', {}).get('ssh_host', 'wsl')
@@ -218,6 +220,200 @@ class Project:
                 manifests[path] = text
         return detect_zmk_version(manifests)
 
+    def zmk_project_info(self):
+        files = {}
+        for path in ('config/west.yml', 'west.yml', 'build.yaml'):
+            rc, text = self._raw_read(path)
+            if rc == 0:
+                files[path] = text
+        info = discover_zmk_project(files, self.root)
+        info['project'] = self.cfg.get('artifact_project_name') or self.name
+        return info
+
+    def _build_zmk(self, info):
+        if info['version'] not in ('v0.3', 'v0.4'):
+            return 126, 'ZMK_VERSION_UNKNOWN: cannot select a ZMK build environment'
+        if not info['is_zmk']:
+            return 126, 'ZMK project requires a west manifest and build.yaml targets'
+        try:
+            destination = select_destination(info['version'], info['project'])
+        except ValueError as error:
+            return 126, 'unsafe ZMK project destination: ' + str(error)
+        environment = ''
+        workspace = ''
+        env_script = ''
+        if self.transport == 'ssh':
+            settings = self.global_cfg.get('settings', {})
+            env_roots = self.cfg.get('zmk_workspaces', settings.get('zmk_workspaces', {}))
+            env_root = env_roots.get(info['version'],
+                                     '/home/stc/zmk-dev/' + info['version']).rstrip('/')
+            env_script = env_root + '/env.sh'
+            env_rc, env_out = self.exec(
+                'test -x %s && test -f %s && test -f %s/zmk/app/CMakeLists.txt' % (
+                    shlex.quote(env_root+'/.venv/bin/west'), shlex.quote(env_script),
+                    shlex.quote(env_root)), 30)
+            if env_rc:
+                return 126, 'no usable WSL ZMK %s environment at %s: %s' % (
+                    info['version'], env_root, env_out.strip())
+            environment = '/bin/bash -c '
+            manifest_repo = 'config' if info['version_source'] == 'config/west.yml' else 'manifest'
+            workspace = self.root.rstrip('/')
+            manifest_path = str(pathlib.PurePosixPath(workspace) / manifest_repo)
+            manifest_rc, manifest_text = self._raw_read(manifest_repo + '/west.yml')
+            if manifest_rc:
+                return manifest_rc, 'cannot read selected west manifest: ' + manifest_repo + '/west.yml'
+            manifest_digest = hashlib.sha256(manifest_text.encode()).hexdigest()
+            setup = ('cd %s && '
+                     'if ! test -f .west/config; then west init -l %s || exit; fi && '
+                     'test "$(west config manifest.path)" = %s && '
+                     'test "$(readlink -f "$(west config manifest.path)/west.yml")" = '
+                     '"$(readlink -f %s/west.yml)" && '
+                     'if ! test "$(cat .west/local-engineer-manifest.sha256 2>/dev/null)" = %s; '
+                     'then west update && printf %%s %s > .west/local-engineer-manifest.sha256; '
+                     'else echo "reusing manifest-verified west modules"; fi') % (
+                         shlex.quote(workspace), shlex.quote(manifest_repo),
+                         shlex.quote(manifest_repo),
+                         shlex.quote(manifest_path), shlex.quote(manifest_digest),
+                         shlex.quote(manifest_digest))
+            setup_script = 'source %s >/dev/null && %s' % (
+                shlex.quote(env_script), setup)
+            rc, out = self.exec(environment + shlex.quote(setup_script), 1800)
+            if rc:
+                return rc, 'west project workspace setup failed at %s using %s environment\n%s' % (
+                    workspace, info['version'], out)
+        app_rc, app_info = self._raw_read('app/CMakeLists.txt')
+        if app_rc not in (0, 2):
+            return app_rc, 'cannot safely inspect app/CMakeLists.txt: ' + app_info
+        source = 'app' if app_rc == 0 else 'zmk/app'
+        board_root = str(pathlib.PurePosixPath(self.root))
+        if self.transport == 'local':
+            has_project_boards = (pathlib.Path(self.root)/'boards').is_dir()
+        else:
+            board_rc, board_out = self.exec(
+                'test -d ' + shlex.quote(board_root + '/boards'), 30)
+            if board_rc not in (0, 1):
+                return board_rc, 'cannot safely inspect project boards directory: ' + board_out
+            has_project_boards = board_rc == 0
+        results = []
+        used_names = set()
+        used_labels = set()
+        for index, target in enumerate(info['targets']):
+            label = target.get('artifact-name') or f"target-{index+1}"
+            if not re.fullmatch(r'[A-Za-z0-9._-]+', label):
+                return 126, 'unsafe build target label in build.yaml'
+            if label in used_labels:
+                return 126, 'duplicate build target label in build.yaml: ' + label
+            used_labels.add(label)
+            relative_build_dir = f'build/local-engineer/{label}'
+            build_dir = (str(pathlib.PurePosixPath(self.root)/relative_build_dir)
+                         if self.transport == 'ssh' else relative_build_dir)
+            source_dir = 'zmk/app' if self.transport == 'ssh' else source
+            cmd = 'west build -s %s -d %s -b %s' % (
+                shlex.quote(source_dir), shlex.quote(build_dir), shlex.quote(target['board']))
+            shield = target.get('shield', '').strip()
+            snippet = target.get('snippet', '').strip()
+            if snippet:
+                cmd += ' -S ' + shlex.quote(snippet)
+            cmake_options = ['-DSHIELD=' + shield] if shield else []
+            if self._raw_read('config/west.yml')[0] == 0:
+                cmake_options.append('-DZMK_CONFIG=' + str(pathlib.PurePosixPath(self.root)/'config'))
+            if has_project_boards:
+                cmake_options.append('-DBOARD_ROOT=' + board_root)
+            cmake_args = target.get('cmake-args', '').strip()
+            if cmake_args:
+                cmake_options.extend(shlex.split(cmake_args))
+            if cmake_options:
+                cmd += ' -- ' + ' '.join(shlex.quote(arg) for arg in cmake_options)
+            if self.transport == 'ssh':
+                command = 'source %s >/dev/null && cd %s && %s' % (
+                    shlex.quote(env_script), shlex.quote(workspace), cmd)
+                cmd = environment + shlex.quote(command)
+            rc, out = self.exec(cmd, 1800)
+            results.append(f'[{label}] exit={rc}\n{out}')
+            if rc:
+                return rc, '\n'.join(results)
+            config_path = f'{relative_build_dir}/zephyr/.config'
+            config_rc, config = self._raw_read(config_path)
+            if config_rc:
+                return 1, '\n'.join(results) + f'\nmissing generated Zephyr config under {build_dir}'
+            if re.search(r'^(?:# )?CONFIG_ZMK_SPLIT(?:=n| is not set)$', config, re.M):
+                results.append('UF2 packaging skipped: target is a non-split utility build')
+                continue
+            if not re.search(r'^CONFIG_ZMK_SPLIT=y$', config, re.M):
+                return 1, '\n'.join(results) + '\nCannot determine split role from generated .config'
+            if re.search(r'^CONFIG_ZMK_SPLIT_ROLE_CENTRAL=y$', config, re.M):
+                role = 'Central'
+            elif re.search(r'^(?:# )?CONFIG_ZMK_SPLIT_ROLE_CENTRAL(?:=n| is not set)$', config, re.M):
+                role = 'Peripheral'
+            else:
+                return 1, '\n'.join(results) + '\nCannot determine split role from generated .config'
+            artifact_rc, artifact_list = self.exec(
+                'find ' + shlex.quote(build_dir) + " -type f -name '*.uf2' -print", 30)
+            artifacts = [line.strip() for line in artifact_list.splitlines() if line.strip()]
+            if artifact_rc or len(artifacts) != 1:
+                return 1, '\n'.join(results) + (
+                    f'\nexpected one UF2 under {build_dir}; found {len(artifacts)} UF2 file(s)')
+            artifact_path = artifacts[0]
+            if pathlib.PurePosixPath(artifact_path).is_absolute():
+                try:
+                    artifact_path = str(pathlib.PurePosixPath(artifact_path).relative_to(
+                        pathlib.PurePosixPath(self.root)))
+                except ValueError:
+                    return 1, '\n'.join(results) + '\nartifact path is outside the project root'
+            try:
+                safe_rel(artifact_path)
+            except ValueError as error:
+                return 1, '\n'.join(results) + '\nrejected artifact path: ' + str(error)
+            try:
+                stamp = dt.datetime.now()
+                filename = artifact_name(info['keyboard'], role, stamp, info['version'])
+                while filename in used_names:
+                    stamp += dt.timedelta(seconds=1)
+                    filename = artifact_name(info['keyboard'], role, stamp, info['version'])
+                copied = self._copy_zmk_artifact(artifact_path, destination, filename)
+            except (OSError, ValueError) as error:
+                return 1, '\n'.join(results) + '\nUF2 copy/verification failed: ' + str(error)
+            used_names.add(filename)
+            results.append('UF2 verified: %s -> %s (%d bytes, sha256 %s)' % (
+                copied['source'], copied['destination'], copied['size'], copied['sha256']))
+        return 0, '\n'.join(results)
+
+    def _copy_zmk_artifact(self, source, destination, filename):
+        if self.transport == 'local':
+            return copy_uf2(str(pathlib.Path(self.root)/source), destination, filename,
+                            '/mnt/d/ZMK-Firmware/zmk-dev')
+        # Keep the remote operation self-contained: the WSL runtime may predate this
+        # source checkout, while copy and verification still run on the artifact host.
+        code = '''import hashlib,json,pathlib,shutil
+root=pathlib.Path(%r).resolve(strict=True)
+src=(root/%r).resolve(strict=True)
+destdir=pathlib.Path(%r)
+name=%r
+allowed=pathlib.Path('/mnt/d/ZMK-Firmware/zmk-dev').resolve()
+if root not in src.parents or not src.is_file() or src.suffix.lower()!='.uf2': raise ValueError('invalid source UF2 path')
+if pathlib.Path(name).name!=name or not name.endswith('.uf2'): raise ValueError('invalid UF2 filename')
+destdir.mkdir(parents=True,exist_ok=True)
+destdir=destdir.resolve(strict=True)
+if allowed not in destdir.parents: raise ValueError('destination escapes ZMK-Firmware root')
+dst=destdir/name
+if dst.exists(): raise ValueError('destination file already exists; refusing to overwrite it')
+shutil.copy2(src,dst)
+size=src.stat().st_size
+digest=lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+if size<=0 or dst.stat().st_size!=size: raise ValueError('source/destination UF2 size mismatch')
+source_hash,destination_hash=digest(src),digest(dst)
+if source_hash!=destination_hash: raise ValueError('source/destination UF2 content mismatch')
+print(json.dumps({'source':str(src),'destination':str(dst),'size':size,'sha256':source_hash,'verified':True}))
+''' % (self.root, source, destination, filename)
+        rc, out = self.exec('python3 -c ' + shlex.quote(code), 120)
+        if rc:
+            raise OSError(out.strip() or 'remote UF2 copy failed')
+        import json
+        result = json.loads(out.splitlines()[-1])
+        if not result.get('verified'):
+            raise OSError('remote UF2 copy verification failed')
+        return result
+
     def _backup(self, path, original):
         if path in self.backed_up: return
         dest = self.backup_root/path
@@ -276,6 +472,11 @@ class Project:
         return self.exec(cmd, timeout)
 
     def build(self, extra=''):
+        zmk = self.zmk_project_info()
+        if zmk['is_zmk']:
+            if extra:
+                return 126, 'extra build arguments are not supported for discovered ZMK targets'
+            return self._build_zmk(zmk)
         cmd = self.build_cmd
         if cmd == 'auto':
             probe = "if [ -x ./ai-build ]; then echo './ai-build'; elif [ -f ./build_local.sh ]; then echo 'bash build_local.sh'; elif [ -f ./build-local.sh ]; then echo 'bash build-local.sh'; elif [ -f ./Cargo.toml ]; then echo 'cargo build'; elif [ -f ./Makefile ]; then echo 'make'; else exit 2; fi"
@@ -320,12 +521,12 @@ def tool_defs(phase='discovery'):
       f('replace_text','Replace exact text in a file. Prefer this for targeted edits.',{'path':{'type':'string'},'old':{'type':'string'},'new':{'type':'string'},'count':{'type':'integer','minimum':1}},['path','old','new']),
       f('write_file','Create or rewrite a project file. Use mainly for small/new files.',{'path':{'type':'string'},'content':{'type':'string'}},['path','content']),
       f('run_command','Run an allowlisted build/test or narrowly targeted inspection command in the project.',{'command':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':1800}},['command']),
-      f('build_project','Run the configured project build command.',{'extra_args':{'type':'string'}},[]),
+      f('build_project','Run the configured build or build every discovered ZMK target, then discover, copy, and verify generated UF2 artifacts.',{'extra_args':{'type':'string'}},[]),
     ]
     if phase == 'force_action':
         return edit_verify
     common = list(edit_verify)
-    common.insert(2, f('inspect_zmk_project','Inspect west manifests and report an evidence-backed ZMK version. Unknown revisions remain ZMK_VERSION_UNKNOWN.',{},[]))
+    common.insert(2, f('inspect_zmk_project','Discover ZMK manifests, version, keyboard name, and build.yaml targets. Unknown revisions remain ZMK_VERSION_UNKNOWN.',{},[]))
     common.insert(2, f('read_file','Read contiguous source lines. Use search match line numbers for start_line; do not always start at 1. Follow the continuation line if output is bounded.',{'path':{'type':'string'},'start_line':{'type':'integer'},'end_line':{'type':'integer'}},['path']))
     if phase == 'post_edit_repair':
         common.insert(3, f('read_test_source','Read the registered test script as verification evidence. Only the script directly registered by the project test command is available.',{'start_line':{'type':'integer'},'end_line':{'type':'integer'}},[]))
@@ -340,12 +541,16 @@ def dispatch(project, name, args):
         if name == 'git_status': rc,out = project.exec('git status --short --branch',60)
         elif name == 'git_diff': rc,out = project.exec('git diff -- .',60)
         elif name == 'inspect_zmk_project':
-            info=project.zmk_version_info()
+            info=project.zmk_project_info()
             rc=0
-            out=(f'ZMK_VERSION: {info.version}\n'
-                 f'revision: {info.revision or "unknown"}\n'
-                 f'source: {info.source or "unknown"}\n'
-                 f'reason: {info.reason or "explicit supported ZMK revision"}')
+            target_text='\n'.join('target %d: board=%s shield=%s' % (
+                index+1, target.get('board',''), target.get('shield',''))
+                for index,target in enumerate(info['targets'])) or 'targets: none discovered'
+            out=(f'ZMK_VERSION: {info["version"]}\n'
+                 f'revision: {info["revision"] or "unknown"}\n'
+                 f'source: {info["version_source"] or "unknown"}\n'
+                 f'keyboard: {info["keyboard"]}\n{target_text}\n'
+                 f'reason: {info["version_reason"] or "explicit supported ZMK revision"}')
         elif name == 'list_files': rc,out = project.list_files(args.get('depth',3))
         elif name == 'search_text': rc,out = project.search(args['pattern'], args.get('glob',''))
         elif name == 'read_file': rc,out = project.read_file(args['path'], args.get('start_line',1), args.get('end_line',260))

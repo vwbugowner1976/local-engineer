@@ -13,6 +13,7 @@ import urllib.error
 from unittest.mock import patch
 
 import local_engineer as m
+import engineer_runtime as er
 from engineer_runtime import bounded_process, preflight, atomic_json, request_completion
 
 
@@ -26,6 +27,7 @@ class SafetyTests(unittest.TestCase):
         self.project=m.Project('fixture',{'root':str(self.root),'build':'python3 -m unittest discover -v','test':'python3 -m unittest discover -v'}, {})
         self.original_state=m.STATE
         m.STATE=self.root/'state'
+        self.project.backup_root=m.STATE/'backups'/'fixture'
 
     def tearDown(self):
         self.token_patch.stop()
@@ -100,6 +102,172 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('inspect_zmk_project',tool_names)
         repair_tool_names={tool['function']['name'] for tool in m.tool_defs('post_edit_repair')}
         self.assertIn('inspect_zmk_project',repair_tool_names)
+
+    def test_zmk_destination_project_name_comes_from_registry_label_or_explicit_metadata(self):
+        manifest=self.root/'config'/'west.yml'
+        manifest.parent.mkdir()
+        manifest.write_text('''manifest:\n  projects:\n    - name: zmk\n      revision: v0.4.0\n''')
+        (self.root/'build.yaml').write_text('''include:\n  - board: board_a\n    shield: my_keyboard_left\n''')
+        self.project.name='KoZakura'
+        self.assertEqual(self.project.zmk_project_info()['project'],'KoZakura')
+        self.project.cfg['artifact_project_name']='alternate-name'
+        self.assertEqual(self.project.zmk_project_info()['project'],'alternate-name')
+
+    def test_zmk_build_compiles_each_discovered_target_and_publishes_verified_artifacts(self):
+        manifest=self.root/'config'/'west.yml'
+        manifest.parent.mkdir()
+        manifest.write_text('''manifest:\n  projects:\n    - name: zmk\n      revision: v0.4.0\n''')
+        (self.root/'build.yaml').write_text('''include:\n  - board: board_a\n    shield: keyboard_left\n    snippet: usb-uart\n    cmake-args: -DCONFIG_TEST=y\n  - board: board_b\n    shield: keyboard_right\n  - board: board_c\n    shield: settings_reset\n''')
+        (self.root/'boards'/'shields').mkdir(parents=True)
+        commands=[]
+        publications=[]
+
+        def execute(command, timeout=900):
+            commands.append(command)
+            if command.startswith('find '):
+                index=int(re.search(r'target-(\d+)',command).group(1))
+                return 0,str(self.root/f'build/local-engineer/target-{index}/zephyr/zmk.uf2')
+            index=int(re.search(r'target-(\d+)',command).group(1))
+            build=self.root/f'build/local-engineer/target-{index}/zephyr'
+            build.mkdir(parents=True,exist_ok=True)
+            config=('CONFIG_ZMK_SPLIT=y\nCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y\n' if index==1 else
+                    '# CONFIG_ZMK_SPLIT is not set\n'
+                    if index==3 else 'CONFIG_ZMK_SPLIT=y\n# CONFIG_ZMK_SPLIT_ROLE_CENTRAL is not set\n')
+            (build/'.config').write_text(config)
+            (build/'zmk.uf2').write_bytes(b'firmware-'+str(index).encode())
+            return 0,'west build ok'
+
+        def publish(source,destination,filename):
+            publications.append((source,destination,filename))
+            return {'source':source,'destination':destination+'/'+filename,'size':10,
+                    'sha256':'a'*64,'verified':True}
+
+        info={'version':'v0.4','revision':'v0.4.0','project':'fixture','keyboard':'keyboard',
+              'version_source':'config/west.yml','is_zmk':True,'targets':[{'board':'board_a','shield':'keyboard_left',
+                                        'snippet':'usb-uart','cmake-args':'-DCONFIG_TEST=y'},
+                                      {'board':'board_b','shield':'keyboard_right'},
+                                      {'board':'board_c','shield':'settings_reset'}]}
+        def read(path):
+            if path.endswith('/.config'):
+                index=int(re.search(r'target-(\d+)',path).group(1))
+                config=('CONFIG_ZMK_SPLIT=y\nCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y\n' if index==1 else
+                        '# CONFIG_ZMK_SPLIT is not set\n'
+                        if index==3 else 'CONFIG_ZMK_SPLIT=y\n# CONFIG_ZMK_SPLIT_ROLE_CENTRAL is not set\n')
+                return 0,config
+            if path == 'config/west.yml':
+                return 0,'manifest: {}\n'
+            return 2,''
+        with patch.object(self.project,'zmk_project_info',return_value=info), \
+             patch.object(self.project,'_raw_read',side_effect=read), \
+             patch.object(self.project,'exec',side_effect=execute), \
+             patch.object(self.project,'_copy_zmk_artifact',side_effect=publish):
+            rc,out=self.project.build()
+
+        self.assertEqual(rc,0,out)
+        builds=[command for command in commands if command.startswith('west build')]
+        self.assertEqual(len(builds),3)
+        self.assertIn('-b board_a',builds[0])
+        self.assertIn('-b board_b',builds[1])
+        self.assertIn('-b board_c',builds[2])
+        self.assertIn('-S usb-uart',builds[0])
+        self.assertIn('-DCONFIG_TEST=y',builds[0])
+        self.assertIn('-DZMK_CONFIG=',builds[0])
+        self.assertIn('-DBOARD_ROOT='+str(self.root),builds[0])
+        self.assertEqual(len(publications),2)
+        self.assertIn('non-split utility build',out)
+        self.assertEqual(publications[0][1],'/mnt/d/ZMK-Firmware/zmk-dev/v0.4/fixture')
+        self.assertIn('-Central-',publications[0][2])
+        self.assertIn('-Peripheral-',publications[1][2])
+        self.assertTrue(publications[0][2].endswith('-v0.4.uf2'))
+
+    def test_zmk_build_refuses_unknown_version_before_running_build(self):
+        manifest=self.root/'config'/'west.yml'
+        manifest.parent.mkdir()
+        manifest.write_text('''manifest:\n  projects:\n    - name: zmk\n      revision: main\n''')
+        (self.root/'build.yaml').write_text('''include:\n  - board: board_a\n    shield: keyboard_left\n''')
+        with patch.object(self.project,'zmk_project_info',return_value={
+                'version':'ZMK_VERSION_UNKNOWN','is_zmk':True}), \
+             patch.object(self.project,'exec') as execute:
+            rc,out=self.project.build()
+        self.assertEqual(rc,126)
+        self.assertIn('ZMK_VERSION_UNKNOWN',out)
+        execute.assert_not_called()
+
+    def test_ssh_zmk_build_selects_matching_wsl_workspace(self):
+        self.project.transport='ssh'
+        self.project.global_cfg={'settings':{'zmk_workspaces':{
+            'v0.3':'/opt/zmk/v0.3','v0.4':'/opt/zmk/v0.4'}}}
+        info={'version':'v0.3','revision':'v0.3.0','version_source':'config/west.yml','project':'fixture','keyboard':'keyboard',
+              'is_zmk':True,'targets':[{'board':'board_a','shield':'keyboard_left'}]}
+        commands=[]
+
+        def execute(command, timeout=900):
+            commands.append(command)
+            if command.startswith('test -x '):
+                return 0,''
+            if command.startswith('test -d '):
+                return 0,''
+            if 'west init -l' in command and 'west update' in command:
+                return 0,'workspace initialized'
+            if 'west build' in command:
+                build=self.root/'build/local-engineer/target-1/zephyr'
+                build.mkdir(parents=True,exist_ok=True)
+                (build/'.config').write_text('CONFIG_ZMK_SPLIT=y\nCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y\n')
+                (build/'zmk.uf2').write_bytes(b'firmware')
+                return 0,'west build ok'
+            if command.startswith('find '):
+                return 0,str(self.root/'build/local-engineer/target-1/zephyr/zmk.uf2')
+            return 126,'unexpected command: '+command[:100]
+
+        def read(path):
+            if path == 'config/west.yml': return 0,'manifest: {}\n'
+            if path.endswith('/.config'): return 0,'CONFIG_ZMK_SPLIT=y\nCONFIG_ZMK_SPLIT_ROLE_CENTRAL=y\n'
+            return 2,''
+
+        with patch.object(self.project,'zmk_project_info',return_value=info), \
+             patch.object(self.project,'_raw_read',side_effect=read), \
+             patch.object(self.project,'exec',side_effect=execute), \
+             patch.object(self.project,'_copy_zmk_artifact',return_value={
+                 'source':'/tmp/zmk.uf2','destination':'/mnt/d/out.uf2','size':8,
+                 'sha256':'b'*64,'verified':True}):
+            rc,out=self.project.build()
+
+        self.assertEqual(rc,0,out)
+        setup_command=next(command for command in commands if 'west init -l' in command)
+        build_command=next(command for command in commands if 'west build' in command)
+        self.assertIn('/opt/zmk/v0.3/env.sh',setup_command)
+        self.assertIn('west init -l config',setup_command)
+        self.assertIn('.west/local-engineer-manifest.sha256',setup_command)
+        self.assertIn(str(self.root),setup_command)
+        self.assertIn('cd '+str(self.root),build_command)
+        self.assertIn('zmk/app',build_command)
+        self.assertNotIn('/opt/zmk/v0.4',build_command)
+
+    def test_zmk_version_evidence_survives_model_context_compaction(self):
+        self.project.cfg['task_mode']='inspect'
+        manifest=self.root/'config'/'west.yml'
+        manifest.parent.mkdir()
+        manifest.write_text('''manifest:\n  projects:\n    - name: zmk\n      revision: v0.3-branch+dya\n''')
+        inspect={'choices':[{'message':{'tool_calls':[{'id':'zmk-info','type':'function',
+            'function':{'name':'inspect_zmk_project','arguments':'{}'}}]}}]}
+        finish={'choices':[{'message':{'content':'The project manifest identifies ZMK v0.3.'}}]}
+        calls=[]
+
+        def api(url,payload,timeout=600):
+            calls.append(payload)
+            if len(calls)==1:
+                return inspect
+            retained='\n'.join(message.get('content','') or '' for message in payload['messages'])
+            self.assertIn('zmk_project_info',retained)
+            self.assertIn('v0.3',retained)
+            return finish
+
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
+             patch.object(m,'get_json',side_effect=api), \
+             patch.object(er,'measure_tokens',side_effect=[1000,9000,1000]):
+            self.assertEqual(m.agent(self.project,'Read the ZMK version from the west manifest.'),0)
+
+        self.assertEqual(len(calls),2)
 
     def test_finish_tool_with_git_status_completes_from_same_response(self):
         finish_report='Finish report from the mixed tool-call response.'
