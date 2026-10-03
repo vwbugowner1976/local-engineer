@@ -1,8 +1,8 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-10-03T22:22:06+00:00",
-  "session": "20261002-070419-c8441a",
-  "status": "running",
+  "published_at": "2026-10-03T22:22:23+00:00",
+  "session": "20261004-072219-fb09b2",
+  "status": "interrupted",
   "phase": "normal",
   "round": 1,
   "repair_attempt": 0,
