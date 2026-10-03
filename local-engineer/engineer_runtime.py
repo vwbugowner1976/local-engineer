@@ -876,8 +876,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
                     reflect('failed verification remained unresolved after bounded discovery')
+            # Keep the structured state bounded before tokenizing the full prompt.
+            # Character slicing alone is unreliable because the server template also
+            # includes tool definitions.  Preserve the important fields first, then
+            # progressively reduce optional context if the measured prompt is large.
             compact={k:v for k,v in state.items() if k not in ('cache','project_config','known_facts','recent_messages')}
-            user=task+'\nGit preflight: '+json.dumps(facts)+'\nRegistry: '+json.dumps(project.cfg)+'\nMemory hints (verify): '+json.dumps(memory)[:1800]+'\nWorking state: '+json.dumps(compact,ensure_ascii=False)[:6500]
+            state_view=json.dumps(compact,ensure_ascii=False)[:3200]
+            registry_view=json.dumps(project.cfg,ensure_ascii=False)[:1400]
+            memory_view=json.dumps(memory,ensure_ascii=False)[:900]
+            user=task+'\nGit preflight: '+json.dumps(facts,ensure_ascii=False)+'\nRegistry: '+registry_view+'\nMemory hints (verify): '+memory_view+'\nWorking state: '+state_view
             if state.get('phase')=='post_edit_repair':
                 user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, paths must be project-relative; prefer replace_text over write_file when changing an existing file. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
             elif state.get('experiment_required'):
