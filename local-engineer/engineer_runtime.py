@@ -876,15 +876,18 @@ Never claim a test passed without a successful tool result. If blocked state the
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
                     reflect('failed verification remained unresolved after bounded discovery')
-            # Keep the structured state bounded before tokenizing the full prompt.
-            # Character slicing alone is unreliable because the server template also
-            # includes tool definitions.  Preserve the important fields first, then
-            # progressively reduce optional context if the measured prompt is large.
+            # Build the prompt from a bounded set of context tiers. The actual
+            # server template/tokenizer is authoritative; character limits are only
+            # the first guard because tool schemas and chat-template overhead also count.
             compact={k:v for k,v in state.items() if k not in ('cache','project_config','known_facts','recent_messages')}
-            state_view=json.dumps(compact,ensure_ascii=False)[:3200]
-            registry_view=json.dumps(project.cfg,ensure_ascii=False)[:1400]
-            memory_view=json.dumps(memory,ensure_ascii=False)[:900]
-            user=task+'\nGit preflight: '+json.dumps(facts,ensure_ascii=False)+'\nRegistry: '+registry_view+'\nMemory hints (verify): '+memory_view+'\nWorking state: '+state_view
+            compact_json=json.dumps(compact,ensure_ascii=False)
+            facts_json=json.dumps(facts,ensure_ascii=False)
+            registry_json=json.dumps(project.cfg,ensure_ascii=False)
+            memory_json=json.dumps(memory,ensure_ascii=False)
+            def prompt_user(state_n=3200, facts_n=1400, registry_n=1400, memory_n=900):
+                return (task+'\nGit preflight: '+facts_json[:facts_n]+'\nRegistry: '+registry_json[:registry_n]
+                        +'\nMemory hints (verify): '+memory_json[:memory_n]
+                        +'\nWorking state: '+compact_json[:state_n])
             if state.get('phase')=='post_edit_repair':
                 user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, paths must be project-relative; prefer replace_text over write_file when changing an existing file. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
             elif state.get('experiment_required'):
@@ -908,12 +911,28 @@ Never claim a test passed without a successful tool result. If blocked state the
                     evidence['zmk_project_info']=state['zmk_project_info']
                 payload['messages']=[{'role':'system','content':'Answer the read-only user question from the supplied repository evidence. No tools are needed. State the concrete answer and its supporting file/command. Do not claim edits or tests were performed. If the evidence is insufficient, clearly state the missing fact. Do not output tool-call markup.'},
                                      {'role':'user','content':json.dumps({'question':task,'git_and_instructions':facts,'inspection_results':evidence},ensure_ascii=False)[:15000]}]
-            # Use the server's actual template/tokenizer, not a character estimate.
-            tokens=measure_tokens(m,payload)
+            # Use the server's actual template/tokenizer. If the first prompt is too
+            # large, progressively remove optional structured context instead of failing
+            # immediately. This is especially important for small read-only tasks.
             context_limit=int(project.cfg.get('context_length',8192))
+            if project.cfg.get('task_mode')=='inspect':
+                payload['max_tokens']=800
+            tokens=measure_tokens(m,payload)
             if tokens+payload['max_tokens']+256>context_limit:
                 payload['messages']=payload['messages'][:2]
                 tokens=measure_tokens(m,payload)
+            if tokens+payload['max_tokens']+256>context_limit:
+                tiers=((1800,900,700,400),(1000,500,400,200),(500,300,200,0),(0,0,0,0))
+                for state_n,facts_n,registry_n,memory_n in tiers:
+                    user=prompt_user(state_n,facts_n,registry_n,memory_n)
+                    if state.get('phase')=='post_edit_repair':
+                        user+='\nPOST_EDIT_REPAIR: use only the supplied targeted evidence and make the smallest justified repair, then verify.'
+                    elif state.get('experiment_required'):
+                        user+='\nExperiment gate: make the smallest safe edit supported by evidence, then verify.'
+                    payload['messages']=[{'role':'system','content':system},{'role':'user','content':user}]
+                    tokens=measure_tokens(m,payload)
+                    if tokens+payload['max_tokens']+256<=context_limit:
+                        break
             if tokens+payload['max_tokens']+256>context_limit:
                 raise RuntimeError('structured state exceeds context budget; checkpoint retained')
             state['max_input_tokens']=max(state.get('max_input_tokens',0),tokens)
