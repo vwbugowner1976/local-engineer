@@ -888,6 +888,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 return (task+'\nGit preflight: '+facts_json[:facts_n]+'\nRegistry: '+registry_json[:registry_n]
                         +'\nMemory hints (verify): '+memory_json[:memory_n]
                         +'\nWorking state: '+compact_json[:state_n])
+            user=prompt_user()
             if state.get('phase')=='post_edit_repair':
                 user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, paths must be project-relative; prefer replace_text over write_file when changing an existing file. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
             elif state.get('experiment_required'):
