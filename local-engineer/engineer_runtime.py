@@ -970,6 +970,29 @@ Never claim a test passed without a successful tool result. If blocked state the
                     if tokens+payload['max_tokens']+256<=context_limit:
                         break
             if tokens+payload['max_tokens']+256>context_limit:
+                # Tool schemas can consume a large fraction of an 8K context even after
+                # the structured state and recent messages have been compacted.  Keep the
+                # normal repair workflow usable by progressively shrinking optional tool
+                # schemas before declaring the checkpoint unrecoverable.
+                compact_tool_names={
+                    'git_status','git_diff','read_file','search_text','list_files',
+                    'inspect_zmk_project','replace_text','write_file','build_project',
+                    'test_project','finish_task','update_working_state'
+                }
+                compact_definitions=[
+                    tool for tool in definitions
+                    if tool['function']['name'] in compact_tool_names
+                ]
+                if len(compact_definitions) < len(payload.get('tools',[])):
+                    payload['tools']=compact_definitions
+                    tokens=measure_tokens(m,payload)
+                if tokens+payload['max_tokens']+256>context_limit:
+                    for max_tokens in (1000,800,600):
+                        payload['max_tokens']=max_tokens
+                        tokens=measure_tokens(m,payload)
+                        if tokens+payload['max_tokens']+256<=context_limit:
+                            break
+            if tokens+payload['max_tokens']+256>context_limit:
                 raise RuntimeError('structured state exceeds context budget; checkpoint retained')
             state['max_input_tokens']=max(state.get('max_input_tokens',0),tokens)
             response=request_completion(m,payload)
