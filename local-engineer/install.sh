@@ -4,15 +4,13 @@ SRC="$(cd "$(dirname "$0")" && pwd)"
 APP="$HOME/.local/share/local-engineer"
 CFG="$HOME/.config/local-engineer"
 mkdir -p "$APP" "$CFG" "$HOME/bin" "$HOME/.local/state/local-engineer"
-cp "$SRC/local_engineer.py" "$APP/local_engineer.py"
-cp "$SRC/engineer_runtime.py" "$APP/engineer_runtime.py"
-cp "$SRC/ollaya_observer.py" "$APP/ollaya_observer.py"
-cp "$SRC/zmk_support.py" "$APP/zmk_support.py"
+# Keep the command pointed at the source checkout instead of copying Python files.
+# This makes \`git pull\` immediately effective and prevents stale runtime modules.
 cp "$SRC/llm" "$HOME/bin/llm"
-chmod +x "$APP/local_engineer.py" "$HOME/bin/llm"
+chmod +x "$SRC/local_engineer.py" "$HOME/bin/llm"
 cat > "$HOME/bin/local-engineer" <<WRAP
 #!/bin/zsh
-exec /usr/bin/env python3 "$APP/local_engineer.py" "\$@"
+exec /usr/bin/env python3 "$SRC/local_engineer.py" "\$@"
 WRAP
 chmod +x "$HOME/bin/local-engineer"
 if [ ! -f "$CFG/projects.json" ]; then
