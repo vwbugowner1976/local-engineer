@@ -1,5 +1,6 @@
 """Durable execution and bounded working state for the existing Local Engineer."""
 import datetime as dt
+import atexit
 import hashlib
 import json
 import os
@@ -502,8 +503,15 @@ def _run_agent(m,project,task,resume=None):
     directory.mkdir(parents=True,exist_ok=True)
     checkpoint=directory/'working_state.json'
     print('[checkpoint] '+str(checkpoint),flush=True)
+    session_started=dt.datetime.now().astimezone()
+    print('[session] start='+session_started.isoformat(timespec='seconds'),flush=True)
     start=time.monotonic()
     prior_elapsed=state['elapsed_s']
+    def report_session_end():
+        elapsed=prior_elapsed+time.monotonic()-start
+        ended=dt.datetime.now().astimezone()
+        print('[session] end='+ended.isoformat(timespec='seconds')+' elapsed='+format(elapsed,'.1f')+'s',flush=True)
+    atexit.register(report_session_end)
     memory_path=m.STATE/'memory'/(project.name+'.json')
     memory=json.loads(memory_path.read_text()) if memory_path.exists() else {}
     state['files_inspected']=list(dict.fromkeys(state['files_inspected']+list(facts['instructions'])))
@@ -764,6 +772,7 @@ def _run_agent(m,project,task,resume=None):
         for fn,command in commands:
             if not command: continue
             state['pending_tool']={'name':fn,'args':{},'automatic':True}; save()
+            verify_started=time.monotonic()
             if command in results:
                 result=results[command]
             else:
@@ -772,8 +781,9 @@ def _run_agent(m,project,task,resume=None):
                 results[command]=result
                 state['tool_calls']+=1
                 state['previous_commands']=(state['previous_commands']+[{'tool':fn,'command':command,'result':result[:800]}])[-5:]
-                record({'tool':fn,'args':{},'result':result,'automatic':True})
-                print('[verify] '+fn+' '+result.splitlines()[0],flush=True)
+                verify_elapsed=time.monotonic()-verify_started
+                record({'tool':fn,'args':{},'result':result,'automatic':True,'elapsed_s':verify_elapsed})
+                print('[verify] '+fn+' '+result.splitlines()[0]+' elapsed=%.1fs'%verify_elapsed,flush=True)
             state['build_status' if fn=='build_project' else 'test_status']=result[:1200]
             if not result.startswith('exit=0'):
                 state['failed_attempts']=(state['failed_attempts']+[fn+': '+result])[-5:]
@@ -816,8 +826,14 @@ After edits run the configured build AND tests, inspect diff, then report: Resul
 Never claim a test passed without a successful tool result. If blocked state the missing fact. Keep answers concise.'''
     definitions=m.tool_defs('discovery')
     if project.cfg.get('task_mode')=='inspect':
-        definitions=[tool for tool in definitions if tool['function']['name'] in ('git_status','git_diff','read_file','search_text','list_files','inspect_zmk_project')]
-        system+='\nThis is a read-only inspection. Answer from supplied evidence as soon as sufficient. No build or edits are requested.'
+        build_requested=bool(re.search(r'(?i)(?:ビルド|build)', task))
+        inspect_names={'git_status','git_diff','read_file','search_text','list_files','inspect_zmk_project'}
+        if build_requested:
+            inspect_names.add('build_project')
+            system+='\nThis is a read-only inspection, but the user explicitly requested an actual build. Build is allowed for evidence gathering; edits and tests remain unavailable. Do not claim a build ran unless the build_project tool result exists.'
+        else:
+            system+='\nThis is a read-only inspection. Answer from supplied evidence as soon as sufficient. No build or edits are requested.'
+        definitions=[tool for tool in definitions if tool['function']['name'] in inspect_names]
     definitions.extend([
         {'type':'function','function':{'name':'finish_task','description':'Finish the task now when evidence is sufficient. Use this for the final report instead of repeating reads.','parameters':{'type':'object','properties':{'report':{'type':'string'}},'required':['report']}}},
         {'type':'function','function':{'name':'test_project','description':'Run the registered test command.','parameters':{'type':'object','properties':{}}}},
@@ -1006,6 +1022,7 @@ Never claim a test passed without a successful tool result. If blocked state the
             defer_edit_batch=False
             for call_index,call in enumerate(calls):
                 fn=call['function']['name']
+                tool_started=time.monotonic()
                 raw_args=call['function'].get('arguments') or '{}'
                 try:
                     args=json.loads(raw_args)
@@ -1124,10 +1141,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                     if readonly: state['cache'][key]=result
                 if readonly and state.get('experiment_required') and not experiment_budget_exhausted:
                     result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; only one more discovery call is available unless a specific missing fact prevents the edit.]'
+                tool_elapsed=time.monotonic()-tool_started
                 state['tool_calls']+=1
                 state['pending_tool']=None
-                print('[tool %d] %s %s'%(state['rounds'],fn,result.splitlines()[0]),flush=True)
-                record({'tool':fn,'args':args,'result':result,'generation':state['generation']})
+                print('[tool %d] %s %s elapsed=%.1fs'%(state['rounds'],fn,result.splitlines()[0],tool_elapsed),flush=True)
+                record({'tool':fn,'args':args,'result':result,'generation':state['generation'],'elapsed_s':tool_elapsed})
                 if fn=='read_file' and result.startswith('exit=0'):
                     state['files_inspected']=list(dict.fromkeys(state['files_inspected']+[args['path']]))[-40:]
                 if fn=='search_text':
