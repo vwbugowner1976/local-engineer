@@ -951,14 +951,16 @@ Never claim a test passed without a successful tool result. If blocked state the
             # Build the prompt from a bounded set of context tiers. The actual
             # server template/tokenizer is authoritative; character limits are only
             # the first guard because tool schemas and chat-template overhead also count.
-            compact={k:v for k,v in state.items() if k not in ('cache','project_config','known_facts','recent_messages')}
+            # Explicit small evidence envelope: durable checkpoint data is not replayed wholesale into 8K.
+            state_fields=('phase','rounds','files_modified','files_inspected','hypothesis',
+                          'hypothesis_target_file','hypothesis_expected_effect','hypothesis_smallest_edit',
+                          'build_status','test_status','supporting_evidence','next_action',
+                          'zmk_project_info','verification_failure_class','repair_allowed_reads')
+            compact={k:state.get(k) for k in state_fields if k in state}
             compact_json=json.dumps(compact,ensure_ascii=False)
             facts_json=json.dumps(facts,ensure_ascii=False)
-            registry_json=json.dumps(project.cfg,ensure_ascii=False)
-            memory_json=json.dumps(memory,ensure_ascii=False)
-            def prompt_user(state_n=3200, facts_n=1400, registry_n=1400, memory_n=900):
-                return (task+'\nGit preflight: '+facts_json[:facts_n]+'\nRegistry: '+registry_json[:registry_n]
-                        +'\nMemory hints (verify): '+memory_json[:memory_n]
+            def prompt_user(state_n=1800, facts_n=700):
+                return (task[:1800]+'\nGit preflight: '+facts_json[:facts_n]
                         +'\nWorking state: '+compact_json[:state_n])
             user=prompt_user()
             if state.get('phase')=='post_edit_repair':
@@ -971,7 +973,7 @@ Never claim a test passed without a successful tool result. If blocked state the
             for item in recent:
                 compact_item=dict(item)
                 if isinstance(compact_item.get('content'),str):
-                    compact_item['content']=compact_item['content'][:2200]
+                    compact_item['content']=compact_item['content'][:1200]
                 if isinstance(compact_item.get('tool_calls'),list):
                     compact_calls=[]
                     for call in compact_item['tool_calls'][:8]:
@@ -988,7 +990,7 @@ Never claim a test passed without a successful tool result. If blocked state the
             current_definitions=[compact_tool_definition(tool) for tool in active_definitions()]
             current_allowed_names={tool['function']['name'] for tool in current_definitions}
             payload={'model':model,'messages':messages,'tools':current_definitions,'tool_choice':'auto',
-                     'temperature':0.2,'max_tokens':900,'chat_template_kwargs':{'enable_thinking':False}}
+                     'temperature':0.2,'max_tokens':700,'chat_template_kwargs':{'enable_thinking':False}}
             if state.get('inspect_build_satisfied'):
                 payload.pop('tools'); payload.pop('tool_choice')
                 payload['messages']=[{'role':'system','content':'Report the completed read-only build investigation from the supplied evidence. The user explicitly requested an actual build and it completed successfully. No further tools are needed. Do not invent a build error. State that the build succeeded, include the verified build timing/result, and clearly say that no current build error was reproduced. Mention any remaining uncertainty only if it is directly supported by the supplied evidence.'},
