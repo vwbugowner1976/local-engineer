@@ -993,6 +993,37 @@ Never claim a test passed without a successful tool result. If blocked state the
                         if tokens+payload['max_tokens']+256<=context_limit:
                             break
             if tokens+payload['max_tokens']+256>context_limit:
+                # Last-resort resume path: use only the tools needed for the current
+                # phase and a tiny checkpoint summary. This prevents a valid checkpoint
+                # from becoming permanently unresumable on an 8K server.
+                essential_by_phase={
+                    'post_edit_repair': {'read_file','replace_text','build_project','test_project','finish_task'},
+                    'normal': {'read_file','search_text','replace_text','write_file','build_project','test_project','finish_task'},
+                }
+                essential=essential_by_phase.get(state.get('phase','normal'), essential_by_phase['normal'])
+                tiny_names=essential & {tool['function']['name'] for tool in definitions}
+                tiny_definitions=[tool for tool in definitions if tool['function']['name'] in tiny_names]
+                tiny_state={
+                    'objective': task,
+                    'phase': state.get('phase'),
+                    'rounds': state.get('rounds'),
+                    'files_modified': state.get('files_modified',[])[:8],
+                    'files_inspected': state.get('files_inspected',[])[-8:],
+                    'hypothesis': state.get('hypothesis','')[:900],
+                    'target_file': state.get('hypothesis_target_file','')[:300],
+                    'build_status': state.get('build_status','')[:900],
+                    'test_status': state.get('test_status','')[:900],
+                    'next_action': state.get('next_action','')[:700],
+                }
+                payload['messages']=[
+                    {'role':'system','content':'Resume the existing Local Engineer task from this checkpoint. Use only the supplied evidence. Continue the current phase; do not restart broad discovery. Make the smallest justified action, then verify and finish.'},
+                    {'role':'user','content':json.dumps(tiny_state,ensure_ascii=False)}
+                ]
+                payload['tools']=tiny_definitions
+                payload['tool_choice']='auto'
+                payload['max_tokens']=500
+                tokens=measure_tokens(m,payload)
+            if tokens+payload['max_tokens']+256>context_limit:
                 raise RuntimeError('structured state exceeds context budget; checkpoint retained')
             state['max_input_tokens']=max(state.get('max_input_tokens',0),tokens)
             response=request_completion(m,payload)
