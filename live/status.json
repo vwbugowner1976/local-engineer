@@ -1,16 +1,16 @@
 {
   "schema": "local-engineer-live-v1",
-  "published_at": "2026-10-05T22:54:05+00:00",
-  "session": "20261006-075300-7b8a80",
+  "published_at": "2026-10-05T22:54:22+00:00",
+  "session": "20261006-075412-3db3d3",
   "status": "interrupted",
   "phase": "normal",
-  "round": 2,
+  "round": 1,
   "repair_attempt": 0,
   "last_tool": "",
   "target": "",
   "next_action": "Use supplied Git and README/AGENTS evidence. Answer informational tasks directly when sufficient; for repairs inspect only relevant source.",
-  "build_status": "stale after resume",
-  "test_status": "stale after resume",
+  "build_status": "not run",
+  "test_status": "not run",
   "hypothesis": "",
   "files_modified": []
 }
