@@ -578,6 +578,20 @@ def doctor(cfg):
     print('=== Local Engineer doctor ===')
     checks = []
 
+    # Report the exact runtime source/commit so stale installed copies are obvious.
+    source_dir = pathlib.Path(__file__).resolve().parent
+    runtime_path = source_dir / 'engineer_runtime.py'
+    try:
+        commit = subprocess.run(
+            ['git','-C',str(source_dir),'rev-parse','--short','HEAD'],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3
+        ).stdout.strip()
+    except Exception:
+        commit = 'unknown'
+    print(f'Runtime source        : {source_dir}')
+    print(f'Runtime module        : {runtime_path}')
+    print(f'Runtime git commit    : {commit or "unknown"}')
+
     try:
         data = get_json(API_BASE + '/models', timeout=3)
         model = data.get('data',[{}])[0].get('id','unknown')
