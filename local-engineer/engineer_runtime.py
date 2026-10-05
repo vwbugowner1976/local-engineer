@@ -408,7 +408,9 @@ def _run_agent(m,project,task,resume=None):
            'repair_previous_build_status':'','repair_previous_test_status':'',
            'repair_current_diff':'','repair_failed_edit':{},
            'verification_failure_class':'','repair_reopen_reason':'','repair_force_reflection':False,
-           'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{}}
+           'prompt_tokens':0,'completion_tokens':0,'elapsed_s':0,'status':'running','file_hashes':{},
+           'inspect_build_requested':bool(project.cfg.get('task_mode')=='inspect' and re.search(r'(?i)(?:ビルド|build)', task)),
+           'inspect_build_satisfied':False}
     prior_reads=[]
     uncertain_edit=None
     uncertain_edit_path=None
@@ -915,7 +917,11 @@ Never claim a test passed without a successful tool result. If blocked state the
             current_allowed_names={tool['function']['name'] for tool in current_definitions}
             payload={'model':model,'messages':messages,'tools':current_definitions,'tool_choice':'auto',
                      'temperature':0.2,'max_tokens':1400,'chat_template_kwargs':{'enable_thinking':False}}
-            if edited and verification and diff_seen:
+            if state.get('inspect_build_satisfied'):
+                payload.pop('tools'); payload.pop('tool_choice')
+                payload['messages']=[{'role':'system','content':'Report the completed read-only build investigation from the supplied evidence. The user explicitly requested an actual build and it completed successfully. No further tools are needed. Do not invent a build error. State that the build succeeded, include the verified build timing/result, and clearly say that no current build error was reproduced. Mention any remaining uncertainty only if it is directly supported by the supplied evidence.'},
+                                     {'role':'user','content':json.dumps({'question':task,'build_status':state.get('build_status',''),'supporting_evidence':state.get('supporting_evidence',''),'elapsed_s':state.get('elapsed_s',0)},ensure_ascii=False)}]
+            elif edited and verification and diff_seen:
                 payload.pop('tools'); payload.pop('tool_choice')
                 payload['messages']=[{'role':'system','content':'Report the completed coding task from the supplied evidence. No tools are available or needed. Do not output tool-call markup. Concise headings: Result, Root cause, Files changed, Build result, Test result, Remaining issues. Never invent hardware verification.'},
                                      {'role':'user','content':json.dumps({k:state[k] for k in ('objective','files_modified','hypothesis','supporting_evidence','build_status','test_status')},ensure_ascii=False)}]
@@ -1203,6 +1209,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run registered build/test immediately. If verification fails, refine this edit in POST_EDIT_REPAIR rather than restarting discovery.'
                 if fn=='build_project': state['build_status']=result[:800]
+                if (fn=='build_project' and success and state.get('inspect_build_requested')
+                        and project.cfg.get('task_mode')=='inspect' and not edited):
+                    state['inspect_build_satisfied']=True
+                    state['next_action']='The requested read-only build completed successfully. Report the build result now; no further repository discovery is needed.'
                 if fn=='test_project': state['test_status']=result[:800]
                 if fn=='run_command' and args.get('command')==project.build_cmd:
                     state['build_status']=result[:800]
