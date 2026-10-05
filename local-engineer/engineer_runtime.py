@@ -517,7 +517,9 @@ def _run_agent(m,project,task,resume=None):
     memory_path=m.STATE/'memory'/(project.name+'.json')
     memory=json.loads(memory_path.read_text()) if memory_path.exists() else {}
     state['files_inspected']=list(dict.fromkeys(state['files_inspected']+list(facts['instructions'])))
-    recent=state.get('recent_messages',[])
+    # Keep only a bounded conversational tail. Full tool results remain in the checkpoint/cache,
+    # but replaying them into every prompt causes normal runs to grow until the 8K context is exhausted.
+    recent=state.get('recent_messages',[])[-1:]
     repeats={}
     no_progress=0
     edited=bool(state['files_modified'])
@@ -925,11 +927,40 @@ Never claim a test passed without a successful tool result. If blocked state the
             elif state.get('experiment_required'):
                 user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Prefer the smallest safe replace_text/write_file edit followed by build/test. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, use update_working_state to state the missing fact and finish with a blocked report.'
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
-            messages.extend(recent)
+            # Replay at most one compacted round. Limit each message independently so a large
+            # build/search result cannot dominate the next request; the full result is preserved in state/events.
+            for item in recent:
+                compact_item=dict(item)
+                if isinstance(compact_item.get('content'),str):
+                    compact_item['content']=compact_item['content'][:2200]
+                if isinstance(compact_item.get('tool_calls'),list):
+                    compact_calls=[]
+                    for call in compact_item['tool_calls'][:8]:
+                        call_copy=dict(call)
+                        fn=call_copy.get('function')
+                        if isinstance(fn,dict):
+                            fn_copy=dict(fn)
+                            if isinstance(fn_copy.get('arguments'),str):
+                                fn_copy['arguments']=fn_copy['arguments'][:900]
+                            call_copy['function']=fn_copy
+                        compact_calls.append(call_copy)
+                    compact_item['tool_calls']=compact_calls
+                messages.append(compact_item)
             current_definitions=active_definitions()
             current_allowed_names={tool['function']['name'] for tool in current_definitions}
+            # Tool schemas are part of the same 8K context. Prefer the compact registry
+            # descriptions during normal operation; keep the full definitions available for
+            # execution, but do not spend the prompt budget repeatedly describing every tool.
+            if len(current_definitions)>7:
+                compact_schema_names={'git_status','git_diff','read_file','search_text','list_files',
+                                      'inspect_zmk_project','replace_text','write_file','build_project',
+                                      'test_project','finish_task','update_working_state'}
+                compact_schema=[tool for tool in current_definitions
+                                if tool['function']['name'] in compact_schema_names]
+                if len(compact_schema)<len(current_definitions):
+                    current_definitions=compact_schema
             payload={'model':model,'messages':messages,'tools':current_definitions,'tool_choice':'auto',
-                     'temperature':0.2,'max_tokens':1400,'chat_template_kwargs':{'enable_thinking':False}}
+                     'temperature':0.2,'max_tokens':900,'chat_template_kwargs':{'enable_thinking':False}}
             if state.get('inspect_build_satisfied'):
                 payload.pop('tools'); payload.pop('tool_choice')
                 payload['messages']=[{'role':'system','content':'Report the completed read-only build investigation from the supplied evidence. The user explicitly requested an actual build and it completed successfully. No further tools are needed. Do not invent a build error. State that the build succeeded, include the verified build timing/result, and clearly say that no current build error was reproduced. Mention any remaining uncertainty only if it is directly supported by the supplied evidence.'},
