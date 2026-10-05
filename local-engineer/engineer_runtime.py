@@ -871,7 +871,7 @@ Never claim a test passed without a successful tool result. If blocked state the
         if (state.get('inspect_build_requested') and
                 project.cfg.get('task_mode')=='inspect' and
                 not state.get('inspect_build_satisfied')):
-            if not state.get('zmk_project_info') and 'inspect_zmk_project' in current_allowed_names:
+            if not state.get('zmk_project_info'):
                 names={'inspect_zmk_project','finish_task'}
             elif not state.get('build_status','').startswith('exit='):
                 names={'build_project','finish_task'}
