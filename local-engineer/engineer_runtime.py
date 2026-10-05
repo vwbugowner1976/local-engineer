@@ -1008,84 +1008,57 @@ Never claim a test passed without a successful tool result. If blocked state the
                     evidence['zmk_project_info']=state['zmk_project_info']
                 payload['messages']=[{'role':'system','content':'Answer the read-only user question from the supplied repository evidence. No tools are needed. State the concrete answer and its supporting file/command. Do not claim edits or tests were performed. If the evidence is insufficient, clearly state the missing fact. Do not output tool-call markup.'},
                                      {'role':'user','content':json.dumps({'question':task,'git_and_instructions':facts,'inspection_results':evidence},ensure_ascii=False)[:15000]}]
-            # Use the server's actual template/tokenizer. If the first prompt is too
-            # large, progressively remove optional structured context instead of failing
-            # immediately. This is especially important for small read-only tasks.
+            # Budget from the server's actual tokenizer. Always keep a no-tool escape hatch.
             context_limit=int(project.cfg.get('context_length',8192))
             if project.cfg.get('task_mode')=='inspect':
                 payload['max_tokens']=800
             tokens=measure_tokens(m,payload)
+
             if tokens+payload['max_tokens']+256>context_limit:
-                payload['messages']=payload['messages'][:2]
+                # Rebuild from the deliberately small evidence envelope.
+                user=prompt_user(1000,400)
+                payload['messages']=[{'role':'system','content':system},
+                                     {'role':'user','content':user}]
                 tokens=measure_tokens(m,payload)
+
             if tokens+payload['max_tokens']+256>context_limit:
-                tiers=((1800,900,700,400),(1000,500,400,200),(500,300,200,0),(0,0,0,0))
-                for state_n,facts_n,registry_n,memory_n in tiers:
-                    user=prompt_user(state_n,facts_n,registry_n,memory_n)
-                    if state.get('phase')=='post_edit_repair':
-                        user+='\nPOST_EDIT_REPAIR: use only the supplied targeted evidence and make the smallest justified repair, then verify.'
-                    elif state.get('experiment_required'):
-                        user+='\nExperiment gate: make the smallest safe edit supported by evidence, then verify.'
-                    payload['messages']=[{'role':'system','content':system},{'role':'user','content':user}]
-                    tokens=measure_tokens(m,payload)
-                    if tokens+payload['max_tokens']+256<=context_limit:
-                        break
-            if tokens+payload['max_tokens']+256>context_limit:
-                # Tool schemas can consume a large fraction of an 8K context even after
-                # the structured state and recent messages have been compacted.  Keep the
-                # normal repair workflow usable by progressively shrinking optional tool
-                # schemas before declaring the checkpoint unrecoverable.
-                compact_tool_names={
-                    'git_status','git_diff','read_file','search_text','list_files',
-                    'inspect_zmk_project','replace_text','write_file','build_project',
-                    'test_project','finish_task','update_working_state'
-                }
-                compact_definitions=[
-                    compact_tool_definition(tool) for tool in definitions
-                    if tool['function']['name'] in compact_tool_names
-                ]
-                if len(compact_definitions) < len(payload.get('tools',[])):
-                    payload['tools']=compact_definitions
-                    tokens=measure_tokens(m,payload)
-                if tokens+payload['max_tokens']+256>context_limit:
-                    for max_tokens in (1000,800,600):
-                        payload['max_tokens']=max_tokens
-                        tokens=measure_tokens(m,payload)
-                        if tokens+payload['max_tokens']+256<=context_limit:
-                            break
-            if tokens+payload['max_tokens']+256>context_limit:
-                # Last-resort resume path: use only the tools needed for the current
-                # phase and a tiny checkpoint summary. This prevents a valid checkpoint
-                # from becoming permanently unresumable on an 8K server.
+                # Tool schemas are optional context. Reduce to only tools relevant to the current phase.
                 essential_by_phase={
                     'post_edit_repair': {'read_file','replace_text','build_project','test_project','finish_task'},
                     'normal': {'read_file','search_text','replace_text','write_file','build_project','test_project','finish_task'},
                 }
                 essential=essential_by_phase.get(state.get('phase','normal'), essential_by_phase['normal'])
-                tiny_names=essential & {tool['function']['name'] for tool in definitions}
-                tiny_definitions=[tool for tool in definitions if tool['function']['name'] in tiny_names]
+                names=essential & {tool['function']['name'] for tool in definitions}
+                payload['tools']=[compact_tool_definition(tool) for tool in definitions
+                                  if tool['function']['name'] in names]
+                tokens=measure_tokens(m,payload)
+
+            if tokens+payload['max_tokens']+256>context_limit:
+                # Final safe path: no tools, tiny evidence, and a small generation budget.
+                payload.pop('tools',None)
+                payload.pop('tool_choice',None)
                 tiny_state={
-                    'objective': task,
+                    'objective': task[:900],
                     'phase': state.get('phase'),
-                    'rounds': state.get('rounds'),
-                    'files_modified': state.get('files_modified',[])[:8],
-                    'files_inspected': state.get('files_inspected',[])[-8:],
-                    'hypothesis': state.get('hypothesis','')[:900],
-                    'target_file': state.get('hypothesis_target_file','')[:300],
-                    'build_status': state.get('build_status','')[:900],
-                    'test_status': state.get('test_status','')[:900],
-                    'next_action': state.get('next_action','')[:700],
+                    'files_modified': state.get('files_modified',[])[:6],
+                    'files_inspected': state.get('files_inspected',[])[-6:],
+                    'hypothesis': state.get('hypothesis','')[:500],
+                    'build_status': state.get('build_status','')[:500],
+                    'test_status': state.get('test_status','')[:500],
+                    'next_action': state.get('next_action','')[:400],
                 }
                 payload['messages']=[
-                    {'role':'system','content':'Resume the existing Local Engineer task from this checkpoint. Use only the supplied evidence. Continue the current phase; do not restart broad discovery. Make the smallest justified action, then verify and finish.'},
+                    {'role':'system','content':'Continue the current Local Engineer task from the supplied checkpoint. Use only this evidence. Do not invent facts. Give the next concise action or final report.'},
                     {'role':'user','content':json.dumps(tiny_state,ensure_ascii=False)}
                 ]
-                payload['tools']=tiny_definitions
-                payload['tool_choice']='auto'
-                payload['max_tokens']=500
+                payload['max_tokens']=300
                 tokens=measure_tokens(m,payload)
+
             if tokens+payload['max_tokens']+256>context_limit:
-                raise RuntimeError('structured state exceeds context budget; checkpoint retained')
+                raise RuntimeError(
+                    f'structured state exceeds context budget; tokens={tokens} '
+                    f'max_tokens={payload["max_tokens"]} context_limit={context_limit}; checkpoint retained'
+                )
             state['max_input_tokens']=max(state.get('max_input_tokens',0),tokens)
             response=request_completion(m,payload)
             usage=response.get('usage',{})
