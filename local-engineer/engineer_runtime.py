@@ -865,6 +865,19 @@ Never claim a test passed without a successful tool result. If blocked state the
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<1 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
+        # Explicit read-only build investigations should reach the real build
+        # before broad repository discovery. For ZMK, inspect the manifest first
+        # (required to choose the build environment), then build immediately.
+        if (state.get('inspect_build_requested') and
+                project.cfg.get('task_mode')=='inspect' and
+                not state.get('inspect_build_satisfied')):
+            if not state.get('zmk_project_info') and 'inspect_zmk_project' in current_allowed_names:
+                names={'inspect_zmk_project','finish_task'}
+            elif not state.get('build_status','').startswith('exit='):
+                names={'build_project','finish_task'}
+            else:
+                names={'finish_task'}
+            return [tool for tool in definitions if tool['function']['name'] in names]
         return definitions
     save()
     try:
@@ -1209,6 +1222,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['build_status']='stale after edit'; state['test_status']='stale after edit'
                     state['next_action']='Run registered build/test immediately. If verification fails, refine this edit in POST_EDIT_REPAIR rather than restarting discovery.'
                 if fn=='build_project': state['build_status']=result[:800]
+                if (fn=='inspect_zmk_project' and success and state.get('inspect_build_requested')
+                        and project.cfg.get('task_mode')=='inspect'):
+                    state['next_action']='ZMK manifest inspection is complete. Run the requested build now; do not perform broad repository discovery first.'
                 if (fn=='build_project' and success and state.get('inspect_build_requested')
                         and project.cfg.get('task_mode')=='inspect' and not edited):
                     state['inspect_build_satisfied']=True
