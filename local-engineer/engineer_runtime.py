@@ -59,6 +59,45 @@ def atomic_json(path, data):
     os.replace(temporary, path)
 
 
+def compact_tool_definition(tool):
+    """Strip prose-only JSON-schema metadata before sending tools to an 8K model context."""
+    fn=tool.get('function',{})
+    params=fn.get('parameters') or {'type':'object','properties':{}}
+    def compact_schema(node):
+        if not isinstance(node,dict):
+            return node
+        out={}
+        for key in ('type','required','enum','items','additionalProperties'):
+            if key in node:
+                value=node[key]
+                if key=='items' and isinstance(value,dict):
+                    value=compact_schema(value)
+                out[key]=value
+        props=node.get('properties')
+        if isinstance(props,dict):
+            out['properties']={name:compact_schema(spec) for name,spec in props.items()}
+        return out
+    name=fn.get('name','')
+    descriptions={
+        'git_status':'Read git status.',
+        'git_diff':'Read the current diff.',
+        'read_file':'Read a bounded source range.',
+        'search_text':'Search repository text.',
+        'list_files':'List repository files.',
+        'inspect_zmk_project':'Inspect ZMK manifest and targets.',
+        'replace_text':'Replace exact source text.',
+        'write_file':'Write a source file.',
+        'build_project':'Run the registered build.',
+        'test_project':'Run the registered test.',
+        'finish_task':'Finish with the final report.',
+        'update_working_state':'Save concise working state.',
+    }
+    return {'type':'function','function':{
+        'name':name,
+        'description':descriptions.get(name,fn.get('description','')[:120]),
+        'parameters':compact_schema(params)
+    }}
+
 def measure_tokens(m,payload):
     base=m.API_BASE.rsplit('/v1',1)[0]
     template=m.get_json(base+'/apply-template',{
@@ -946,19 +985,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                         compact_calls.append(call_copy)
                     compact_item['tool_calls']=compact_calls
                 messages.append(compact_item)
-            current_definitions=active_definitions()
+            current_definitions=[compact_tool_definition(tool) for tool in active_definitions()]
             current_allowed_names={tool['function']['name'] for tool in current_definitions}
-            # Tool schemas are part of the same 8K context. Prefer the compact registry
-            # descriptions during normal operation; keep the full definitions available for
-            # execution, but do not spend the prompt budget repeatedly describing every tool.
-            if len(current_definitions)>7:
-                compact_schema_names={'git_status','git_diff','read_file','search_text','list_files',
-                                      'inspect_zmk_project','replace_text','write_file','build_project',
-                                      'test_project','finish_task','update_working_state'}
-                compact_schema=[tool for tool in current_definitions
-                                if tool['function']['name'] in compact_schema_names]
-                if len(compact_schema)<len(current_definitions):
-                    current_definitions=compact_schema
             payload={'model':model,'messages':messages,'tools':current_definitions,'tool_choice':'auto',
                      'temperature':0.2,'max_tokens':900,'chat_template_kwargs':{'enable_thinking':False}}
             if state.get('inspect_build_satisfied'):
@@ -1011,7 +1039,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                     'test_project','finish_task','update_working_state'
                 }
                 compact_definitions=[
-                    tool for tool in definitions
+                    compact_tool_definition(tool) for tool in definitions
                     if tool['function']['name'] in compact_tool_names
                 ]
                 if len(compact_definitions) < len(payload.get('tools',[])):
