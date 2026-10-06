@@ -104,7 +104,7 @@ class SafetyTests(unittest.TestCase):
         self.assertIn('inspect_zmk_project',repair_tool_names)
 
     def test_working_state_checkpoint_tool_has_no_freeform_arguments(self):
-        definitions=er.tool_defs('discovery')
+        definitions=m.tool_defs('discovery')
         update=next(tool for tool in definitions if tool['function']['name']=='update_working_state')
         self.assertEqual(update['function']['parameters']['properties'],{})
 
