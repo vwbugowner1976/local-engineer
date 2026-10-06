@@ -521,7 +521,7 @@ def tool_defs(phase='discovery'):
       f('replace_text','Replace exact text in a file. Prefer this for targeted edits.',{'path':{'type':'string'},'old':{'type':'string'},'new':{'type':'string'},'count':{'type':'integer','minimum':1}},['path','old','new']),
       f('write_file','Create or rewrite a project file. Use mainly for small/new files.',{'path':{'type':'string'},'content':{'type':'string'}},['path','content']),
       f('run_command','Run an allowlisted build/test or narrowly targeted inspection command in the project.',{'command':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':1800}},['command']),
-      f('build_project','Run the configured build or build every discovered ZMK target, then discover, copy, and verify generated UF2 artifacts.',{'extra_args':{'type':'string'}},[]),
+      f('build_project','Run the configured build or build every discovered ZMK target, then discover, copy, and verify generated UF2 artifacts.',{},[]),
     ]
     if phase == 'force_action':
         return edit_verify
@@ -558,7 +558,7 @@ def dispatch(project, name, args):
         elif name == 'replace_text': rc,out = project.replace_text(args['path'], args['old'], args['new'], args.get('count',1))
         elif name == 'write_file': rc,out = project.write_file(args['path'], args['content'])
         elif name == 'run_command': rc,out = project.command(args['command'], args.get('timeout',900))
-        elif name == 'build_project': rc,out = project.build(args.get('extra_args',''))
+        elif name == 'build_project': rc,out = project.build()
         else: return 'unknown tool'
         return f'exit={rc}\n{clip(out)}'
     except (TypeError, ValueError) as e:
