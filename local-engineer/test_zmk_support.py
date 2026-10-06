@@ -87,9 +87,12 @@ class ZmkVersionDetectionTests(unittest.TestCase):
                 timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stdout)
-            installed_cli = home / ".local" / "share" / "local-engineer" / "local_engineer.py"
+            installed_cli = repository / "local_engineer.py"
+            installed_wrapper = home / "bin" / "local-engineer"
+            self.assertTrue(installed_cli.is_file())
+            self.assertTrue(installed_wrapper.is_file())
             smoke = subprocess.run(
-                ["python3", str(installed_cli), "projects"],
+                [str(installed_wrapper), "projects"],
                 env=environment,
                 text=True,
                 stdout=subprocess.PIPE,
