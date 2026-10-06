@@ -845,7 +845,9 @@ def _run_agent(m,project,task,resume=None):
         else:
             state['targeted_discovery_reviews']=0
         state['experiment_state_updates']=0
-        state['discovery_after_hypothesis']=0
+        # Keep the bounded post-hypothesis discovery count cumulative across
+        # reflection. A reflection reviews the evidence; it must not refund reads.
+        state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)
         state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
         if state.get('status') != 'blocked':
             state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
@@ -1386,6 +1388,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['repair_previous_build_status']=state.get('build_status','')[:1200]
                     state['repair_previous_test_status']=state.get('test_status','')[:1200]
                     state['generation']+=1; state['cache']={}; no_progress=0
+                    # Repetition counts belong to the old hypothesis/generation.
+                    # A successful edit is real progress, so stale read-loop counts
+                    # must not trip the global repeated-tool safety blocker.
+                    repeats.clear()
                     state['reflections_this_generation']=0
                     state['failed_verification_discovery_calls']=0
                     state['force_reflection']=False
