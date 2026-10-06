@@ -1197,6 +1197,21 @@ Never claim a test passed without a successful tool result. If blocked state the
                 msg={'content':report}
                 calls=[]
             if not calls:
+                # An actionable hypothesis is an experiment gate, not a completion state.
+                # Never let a no-tool model response finalize the task as verification_failed
+                # before the model has either edited/tested or exhausted the bounded discovery
+                # budget. Continue to the next round so the gate can enforce its tool policy.
+                if (not edited and state.get('experiment_required')
+                        and state.get('status') != 'blocked'):
+                    no_progress+=1
+                    state['next_action']='Actionable hypothesis is ready. Make the smallest safe edit, or use a bounded discovery read only for one concrete missing fact.'
+                    if no_progress<3:
+                        save()
+                        continue
+                    state['status']='blocked'
+                    state['next_action']='Actionable hypothesis produced no edit or verification progress after repeated rounds; checkpoint saved for human review.'
+                    save()
+                    return 2
                 final=msg.get('content') or ''
                 if not final.strip() or '<tool_call>' in final or response['choices'][0].get('finish_reason')=='length':
                     no_progress+=1
