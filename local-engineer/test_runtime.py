@@ -143,6 +143,22 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("state['discovery_after_hypothesis']>=5",runtime)
         self.assertIn("up to four focused discovery calls are available",runtime)
 
+    def test_safe_west_diagnostics_are_allowed_but_workspace_mutation_is_not(self):
+        allowed = [
+            'west --version',
+            'west topdir',
+            'west list',
+            'west config manifest.path',
+            'west config manifest.file',
+            'west manifest --freeze',
+        ]
+        for command in allowed:
+            ok, reason = self.project.safe_command(command)
+            self.assertTrue(ok, (command, reason))
+        for command in ('west init -l .', 'west update', 'west forall -c git status'):
+            ok, reason = self.project.safe_command(command)
+            self.assertFalse(ok, (command, reason))
+
     def test_build_project_has_no_model_supplied_extra_args(self):
         definitions=m.tool_defs('discovery')
         build=next(tool for tool in definitions if tool['function']['name']=='build_project')
