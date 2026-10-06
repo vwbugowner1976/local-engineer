@@ -662,6 +662,9 @@ def _run_agent(m,project,task,resume=None):
         return state['repair_allowed_reads']
     def _repair_continuation(path=None):
         if state.get('repair_read_continuation_used',0): return None
+        saved=state.get('repair_read_continuation')
+        if saved and (not path or saved[0]==path):
+            return tuple(saved)
         allowed=set(state.get('repair_allowed_reads',[]))
         for key,value in reversed(list(state.get('cache',{}).items())):
             if ':read_file:' not in key: continue
@@ -839,12 +842,13 @@ def _run_agent(m,project,task,resume=None):
         state['experiment_state_updates']=0
         state['discovery_after_hypothesis']=0
         state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
-        state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
-                              'Use discovery only for one exact missing fact needed to identify that edit; otherwise report a blocker.'
-                              if state['experiment_required'] else
-                              ('Targeted read required: read only the exact source range needed to identify a safe edit, then re-evaluate; otherwise report a blocker.'
-                               if state['targeted_discovery_required'] else
-                               'Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.'))
+        if state.get('status') != 'blocked':
+            state['next_action']=('Experiment required: make the smallest safe edit that tests the hypothesis, then build/test. '
+                                  'Use discovery only for one exact missing fact needed to identify that edit; otherwise report a blocker.'
+                                  if state['experiment_required'] else
+                                  ('Targeted read required: read only the exact source range needed to identify a safe edit, then re-evaluate; otherwise report a blocker.'
+                                   if state['targeted_discovery_required'] else
+                                   'Apply the evidence-supported plan in hypothesis; if it identifies missing lines, read only those lines. Then build/test.'))
         record({'reflection':note,'structured':structured,'reason':reason,'usage':usage})
         print('[hypothesis] saved evidence-based plan',flush=True)
         save()
@@ -1001,11 +1005,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflect_post_edit('post-edit verification failure')
             if not edited and project.cfg.get('task_mode')!='inspect':
                 reflection_count=state.get('reflections_this_generation',0)
-                if state.get('force_reflection') and reflection_count<2:
+                if state.get('force_reflection') and reflection_count<1:
                     reflect('resume with unedited failed verification')
                 elif state['rounds']>=8 and reflection_count==0:
                     reflect('initial discovery stalled')
-                elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
+                elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<1:
                     reflect('failed verification remained unresolved after bounded discovery')
                 if state.get('status')=='blocked':
                     save(); return 2
@@ -1145,7 +1149,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                     ])[-5:]
                     state['next_action']='The final report tool arguments were malformed. Retry finish_task with compact valid JSON, without additional discovery.'
                     state['tool_calls']+=1
-                    error_result='exit=125\\nMalformed finish_task arguments rejected: '+repr(error)
+                    error_result='exit=125\\nfinish_task: malformed tool arguments: '+repr(error)
                     record({'tool':'finish_task','args':{},'raw_arguments':raw_finish_args[:2000],
                             'result':error_result,
                             'generation':state['generation']})
@@ -1250,7 +1254,16 @@ Never claim a test passed without a successful tool result. If blocked state the
                     elif fn not in current_allowed_names:
                         result='exit=126\nTool is not enabled for this task mode'
                         tool_gate_violation=bool(state.get('experiment_required') or state.get('targeted_discovery_required') or state.get('phase')=='post_edit_repair')
-                    elif repeats[key]>2 and fn!='update_working_state':
+                        if fn=='update_working_state' and tool_gate_violation:
+                            state['status']='blocked'
+                            state['next_action']='Checkpoint state is automatic; update_working_state is unavailable in the current safety gate. Checkpoint saved for human review.'
+                            state['experiment_state_updates']=0
+                            save()
+                            print('[blocked] model attempted unavailable update_working_state; checkpoint saved',flush=True)
+                            return 2
+                    elif (repeats[key]>2 and fn!='update_working_state'
+                           and not (fn=='read_file' and (state.get('hypothesis_ready') and not edited
+                                                        or state.get('targeted_discovery_required')))):
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
                         if state.get('experiment_required'):
@@ -1284,6 +1297,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                             else:
                                 result=m.dispatch(project,fn,args)
                                 if result.startswith('exit=0'):
+                                    marker=re.search(r'Continue with start_line=(\d+)',result)
+                                    if marker and requested_path:
+                                        state['repair_read_continuation']=[requested_path,int(marker.group(1))]
                                     if is_continuation:
                                         state['repair_read_continuation_used']=1
                                     else:
@@ -1365,6 +1381,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['repair_force_reflection']=False
                     state['repair_git_diff_used']=0
                     state['repair_read_continuation_used']=0
+                    state['repair_read_continuation']=None
                     state['repair_edit_failures']=0
                     state['repair_current_diff']=''
                     state['repair_failed_edit']={}
@@ -1395,19 +1412,20 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['cache']={}
                 if readonly and verification_failed() and not edited:
                     state['failed_verification_discovery_calls']=state.get('failed_verification_discovery_calls',0)+1
-                    # Two evidence reviews per generation are enough to recover from
-                    # one bad hypothesis.  Further browsing after the final review is
-                    # a semantic stall even if each call has different arguments.
-                    if (state.get('reflections_this_generation',0)>=2 and
+                    # One evidence review per generation is enough to recover from
+                    # a bad hypothesis. Further browsing after that is a semantic stall,
+                    # even when each call uses different arguments.
+                    if (state.get('reflections_this_generation',0)>=1 and
                         state['failed_verification_discovery_calls']>=5):
                         state['status']='blocked'
                         state['next_action']='Failed verification remained unresolved after bounded discovery and two evidence reviews; checkpoint saved for human review.'
                         save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
                 if fn=='read_file' and state.get('targeted_discovery_required') and success:
                     state['targeted_discovery_calls']=state.get('targeted_discovery_calls',0)+1
-                    state['targeted_discovery_required']=False
-                    state['force_reflection']=True
-                    state['next_action']='Targeted evidence was read; re-evaluate for an actionable minimal experiment before further tools.'
+                    # Keep the unresolved-target flag until a concrete edit target is
+                    # identified. The hypothesis gate still permits bounded reads.
+                    state['force_reflection']=False
+                    state['next_action']='Targeted evidence was read; continue the bounded evidence review or make the actionable minimal edit.'
                 if (state.get('phase')=='post_edit_repair' and
                     state.get('repair_attempts',0)>=state.get('repair_max_attempts',2) and
                     state.get('repair_targeted_reads_used',0)>=state.get('repair_max_targeted_reads',2) and
