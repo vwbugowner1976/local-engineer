@@ -799,17 +799,25 @@ def _run_agent(m,project,task,resume=None):
         tokens=measure_tokens(m,prompt)
         if tokens+prompt['max_tokens']+256>int(project.cfg.get('context_length',8192)):
             return
+        # Reflection is a structured internal call. A stale/tool-call-shaped response
+        # must not be interpreted as an empty hypothesis; retry once so the next model
+        # response can supply the JSON reflection expected by this gate.
         response=request_completion(m,prompt)
         note=response['choices'][0]['message'].get('content') or ''
         structured={}
-        candidate=note.strip()
-        if candidate.startswith('```'):
-            candidate=candidate.split('\n',1)[-1].rsplit('```',1)[0].strip()
-        try:
-            decoded=json.loads(candidate)
-            if isinstance(decoded,dict): structured=decoded
-        except (TypeError,ValueError):
-            pass
+        for _ in range(2):
+            candidate=note.strip()
+            if candidate.startswith('```'):
+                candidate=candidate.split('\\n',1)[-1].rsplit('```',1)[0].strip()
+            try:
+                decoded=json.loads(candidate)
+                if isinstance(decoded,dict):
+                    structured=decoded
+                    break
+            except (TypeError,ValueError):
+                pass
+            response=request_completion(m,prompt)
+            note=response['choices'][0]['message'].get('content') or ''
         source_paths=[]
         for item in evidence:
             try: source_paths.append(json.loads(item).get('path',''))
