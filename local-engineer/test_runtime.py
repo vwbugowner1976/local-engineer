@@ -131,11 +131,10 @@ class SafetyTests(unittest.TestCase):
         repair_tool_names={tool['function']['name'] for tool in m.tool_defs('post_edit_repair')}
         self.assertIn('inspect_zmk_project',repair_tool_names)
 
-    def test_working_state_checkpoint_tool_has_no_freeform_arguments(self):
-        definitions=m.tool_defs('discovery')
-        update=next(tool for tool in definitions if tool['function']['name']=='update_working_state')
-        self.assertEqual(update['function']['parameters']['properties'],{})
-
+    def test_working_state_checkpoint_tool_is_not_exposed_as_a_model_tool(self):
+        for phase in ('discovery','post_edit_repair'):
+            names={tool['function']['name'] for tool in m.tool_defs(phase)}
+            self.assertNotIn('update_working_state',names)
     def test_initial_discovery_and_post_hypothesis_read_budgets_are_bounded_but_not_too_small(self):
         runtime=Path(__file__).with_name("engineer_runtime.py").read_text()
         self.assertIn("state['rounds']>=8 and reflection_count==0",runtime)
@@ -749,22 +748,18 @@ class SafetyTests(unittest.TestCase):
         self.project.cfg['test']='registered-failing-test'
         def tool(name,args):
             return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
-        wrong={'choices':[{'message':{'content':"Actual is 'Saved', expected is 'Ready', but prefer Saved."}}]}
-        corrected={'choices':[{'message':{'content':"Actual is 'Saved'; expected is 'Ready'. Change selection toward Ready."}}]}
-        first=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3)]
-        middle=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (4,1,2,3,4,1)]
-        last=[tool('search_text',{'pattern':'value%s'%n,'glob':'*.py'}) for n in range(5)]
-        responses=first+[wrong]+middle+[corrected]+last
+        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4)]
+        reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the selected value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace value = 0 with value = 2','missing_evidence':''})}}]}
+        post=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1)]
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=responses), \
+             patch.object(m,'get_json',side_effect=reads+[reflection]+post), \
              patch.object(self.project,'build',return_value=(0,'build ok')), \
              patch.object(self.project,'command',return_value=(1,"assertion: actual 'Saved' != expected 'Ready'")):
             self.assertEqual(m.agent(self.project,'repair failing peer selection'),2)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflections_this_generation'],1)
-        self.assertEqual(state['discovery_after_hypothesis'],3)
+        self.assertEqual(state['discovery_after_hypothesis'],5)
         self.assertEqual(state['status'],'blocked')
-
     def test_hypothesis_gate_prefers_an_edit_after_initial_discovery(self):
         (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
         (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
@@ -772,52 +767,50 @@ class SafetyTests(unittest.TestCase):
         self.project.cfg['test']='registered-failing-test'
         def tool(name,args):
             return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
-        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4,1)]
-        wrong={'choices':[{'message':{'content':'The observed value is Saved, so preserve Saved.'}}]}
+        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4)]
+        reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the observed value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace value = 0 with value = 2','missing_evidence':''})}}]}
         edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
         final={'choices':[{'message':{'content':'Result: corrected after test-evidence review.'}}]}
-        responses=reads[:3]+[wrong,edit,final]
         tests=iter([(1,"actual 'Saved' != expected 'Ready'"),(0,'test ok')])
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=responses), \
+             patch.object(m,'get_json',side_effect=reads+[reflection,edit,final]), \
              patch.object(self.project,'build',return_value=(0,'build ok')), \
              patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
             self.assertEqual(m.agent(self.project,'repair'),0)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflection_calls'],1)
         self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
-
     def test_hypothesis_gate_warns_before_it_blocks_discovery(self):
         (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\n')
-        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
         self.project.cfg['initial_verify']=True
         self.project.cfg['test']='registered-failing-test'
         def tool(name,args):
             return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
-        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,1)]
-        reflection={'choices':[{'message':{'content':'Actual is 0; expected is 2. Replace the arithmetic operator.'}}]}
-        edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
-        final={'choices':[{'message':{'content':'Result: experiment verified.'}}]}
-        tests=iter([(1,'actual 0, expected 2'),(0,'test ok')])
+        reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,1,2,3,1,2)]
+        reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the observed value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace value = 0 with value = 2','missing_evidence':''})}}]}
+        post=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,1,2)]
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=reads[:3]+[reflection,reads[3],edit,final]), \
+             patch.object(m,'get_json',side_effect=reads+[reflection]+post), \
              patch.object(self.project,'build',return_value=(0,'build ok')), \
-             patch.object(self.project,'command',side_effect=lambda *args: next(tests)):
-            self.assertEqual(m.agent(self.project,'repair'),0)
+             patch.object(self.project,'command',return_value=(1,'actual 0, expected 2')):
+            self.assertEqual(m.agent(self.project,'repair'),2)
         session=next((m.STATE/'sessions').glob('*/working_state.json')).parent
+        state=json.loads((session/'working_state.json').read_text())
+        self.assertEqual(state['status'],'blocked')
+        self.assertEqual(state['discovery_after_hypothesis'],5)
         self.assertIn('EXPERIMENT REQUIRED', (session/'events.jsonl').read_text())
-
     def test_unknown_edit_target_blocks_safely_after_hypothesis_budget(self):
         (self.root/'source.py').write_text('unrelated = True\n')
         self.project.cfg['initial_verify']=True
         self.project.cfg['test']='registered-failing-test'
         def tool(name,args):
             return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
-        first=[tool('read_file',{'path':'source.py','start_line':1,'end_line':1}) for _ in range(3)]
-        searches=[tool('search_text',{'pattern':'missing%s'%n,'glob':'*.py'}) for n in range(3)]
-        reflection={'choices':[{'message':{'content':'The test fails, but no safe edit target is identified yet.'}}]}
+        first=[tool('read_file',{'path':'source.py','start_line':1,'end_line':1}) for _ in range(8)]
+        reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the failing behavior cannot yet be mapped safely to a source edit','target_file':'','expected_effect':'','smallest_edit':'','missing_evidence':'the exact source location responsible for the failing behavior'})}}]}
+        targeted=[tool('read_file',{'path':'source.py','start_line':1,'end_line':1})]
+        second_reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the failing behavior still has no safe source target','target_file':'','expected_effect':'','smallest_edit':'','missing_evidence':'the exact source location responsible for the failing behavior'})}}]}
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=first+[reflection]+searches), \
+             patch.object(m,'get_json',side_effect=first+[reflection]+targeted+[second_reflection]), \
              patch.object(self.project,'build',return_value=(0,'build ok')), \
              patch.object(self.project,'command',return_value=(1,'expected behavior is unknown')):
             self.assertEqual(m.agent(self.project,'repair'),2)
@@ -825,13 +818,10 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(state['status'],'blocked')
         self.assertEqual(state['files_modified'],[])
         self.assertTrue(state['targeted_discovery_required'])
-
     def test_experiment_tool_schema_removes_discovery_and_keeps_edits(self):
         (self.root/'calc.py').write_text('value = 0\n')
-        (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
         checkpoint=self.root/'resume-gate.json'
-        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
-            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture','project_config':self.project.cfg,'objective':'repair','files_modified':[],
             'build_status':'exit=0\\nbuild ok','test_status':'exit=1\\nactual 0 expected 2',
             'cache':{'0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
         seen=[]
@@ -842,46 +832,34 @@ class SafetyTests(unittest.TestCase):
                 return {'choices':[{'message':{'content':json.dumps({'hypothesis':'value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace 0 with 2','missing_evidence':''})}}]}
             names={entry['function']['name'] for entry in payload['tools']}
             seen.append(names)
-            if len(seen)==1:
+            if len(seen)<=4:
                 self.assertIn('read_file',names)
+                self.assertNotIn('search_text',names); self.assertNotIn('list_files',names)
+                self.assertNotIn('run_command',names); self.assertNotIn('write_file',names)
+                self.assertNotIn('inspect_zmk_project',names); self.assertNotIn('update_working_state',names)
+                self.assertIn('replace_text',names); self.assertIn('finish_task',names)
+                self.assertNotIn('test_project',names)
                 return tool('read_file',{'path':'calc.py','start_line':1,'end_line':1})
-            if len(seen)==2:
-                self.assertIn('read_file',names)
-                return tool('read_file',{'path':'calc.py','start_line':1,'end_line':1})
-            self.assertNotIn('read_file',names)
-            self.assertFalse({'search_text','list_files'} & names)
-            self.assertNotIn('run_command',names)
-            self.assertIn('replace_text',names)
-            self.assertNotIn('write_file',names)
-            self.assertNotIn('inspect_zmk_project',names)
-            self.assertNotIn('update_working_state',names)
-            self.assertIn('test_project',names)
             return tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
         final={'choices':[{'message':{'content':'Result: edit verified.'}}]}
-        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=lambda url,payload,timeout=600: final if len(seen)>=3 and 'tools' not in payload and payload['messages'][0]['content'].startswith('Report') else api(url,payload,timeout)):
+        def get(url,payload,timeout=600):
+            if 'tools' not in payload and len(seen)>=5: return final
+            return api(url,payload,timeout)
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=get):
             self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),0)
         self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
-
     def test_experiment_state_updates_cannot_extend_the_gate_indefinitely(self):
         (self.root/'calc.py').write_text('value = 0\n')
         checkpoint=self.root/'resume-updates.json'
-        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture',
-            'project_config':self.project.cfg,'objective':'repair','files_modified':[],
+        checkpoint.write_text(json.dumps({'root':str(self.root),'branch':'development','project':'fixture','project_config':self.project.cfg,'objective':'repair','files_modified':[],
             'build_status':'exit=0\\nbuild ok','test_status':'exit=1\\nactual 0 expected 2',
             'cache':{'0:read_file:{"end_line": 1, "path": "calc.py", "start_line": 1}':'exit=0\\n1: value = 0'}}))
-        def tool(name,args):
-            return {'choices':[{'message':{'tool_calls':[{'id':name+str(args),'type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
         reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace 0 with 2','missing_evidence':''})}}]}
-        update=tool('update_working_state',{'next_action':'still considering the same edit'})
-        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=[reflection,update,update,update]):
+        update={'choices':[{'message':{'tool_calls':[{'id':'update','type':'function','function':{'name':'update_working_state','arguments':json.dumps({'next_action':'still considering the same edit'})}}]}}]}
+        with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=[reflection,update]):
             self.assertEqual(m.agent(self.project,'ignored',str(checkpoint)),2)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
-        self.assertEqual(state['experiment_state_updates'],3)
-        self.assertEqual(state['files_modified'],[])
-        self.assertEqual(state['status'],'blocked')
-
+        self.assertEqual(state['experiment_state_updates'],0); self.assertEqual(state['files_modified'],[]); self.assertEqual(state['status'],'blocked')
     def test_resume_stale_hypothesis_is_reflected_again(self):
         (self.root/'calc.py').write_text('value = 0\n')
         checkpoint=self.root/'stale.json'
@@ -931,16 +909,14 @@ class SafetyTests(unittest.TestCase):
         (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
         def tool(name,args):
             return {'choices':[{'message':{'tool_calls':[{'id':'call','type':'function','function':{'name':name,'arguments':json.dumps(args)}}]}}]}
-        responses=[tool('read_file',{'path':'calc.py','start_line':a,'end_line':b}) for a,b in ((1,1),(2,2),(1,2))]
-        responses += [{'choices':[{'message':{'content':'The supplied calc.py has value 0; change it to 2 and verify.'}}]},
+        responses=[tool('read_file',{'path':'calc.py','start_line':a,'end_line':b}) for a,b in ((1,1),(2,2),(1,2),(1,1),(2,2),(1,2),(1,1),(1,2))]
+        responses += [{'choices':[{'message':{'content':json.dumps({'hypothesis':'calc value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace value = 0 with value = 2','missing_evidence':''})}}]},
                       tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'}),
                       {'choices':[{'message':{'content':'Fixed and verified.'}}]}]
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), patch.object(m,'get_json',side_effect=responses):
             self.assertEqual(m.agent(self.project,'fix value'),0)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
-        self.assertEqual(state['reflection_calls'],1)
-        self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
-
+        self.assertEqual(state['reflection_calls'],1); self.assertEqual((self.root/'calc.py').read_text(),'value = 2\n')
     def test_edit_build_failure_repair_rebuild_checkpoint_resume(self):
         (self.root/'calc.py').write_text('value = 0\n')
         (self.root/'test_calc.py').write_text('import unittest\nclass TestCalc(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
