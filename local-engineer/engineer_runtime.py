@@ -663,6 +663,11 @@ def _run_agent(m,project,task,resume=None):
         return state['repair_allowed_reads']
     def _repair_continuation(path=None):
         if state.get('repair_read_continuation_used',0): return None
+        # A continuation is an exception only after the normal targeted-read budget
+        # has been consumed. Before that point a stale marker must not keep read_file
+        # exposed across the budget boundary.
+        if state.get('repair_targeted_reads_used',0) < state.get('repair_max_targeted_reads',2):
+            return None
         saved=state.get('repair_read_continuation')
         if saved and (not path or saved[0]==path):
             return tuple(saved)
@@ -1339,8 +1344,14 @@ Never claim a test passed without a successful tool result. If blocked state the
                                             marker=re.search(r'Continue with start_line=(\d+)',result)
                                     if marker and requested_path:
                                         state['repair_read_continuation']=[requested_path,int(marker.group(1))]
+                                    if marker and requested_path:
+                                        state['repair_read_continuation']=[requested_path,int(marker.group(1))]
+                                    elif not is_continuation:
+                                        # A normal read without truncation supersedes an older continuation marker.
+                                        state['repair_read_continuation']=None
                                     if is_continuation:
                                         state['repair_read_continuation_used']=1
+                                        state['repair_read_continuation']=None
                                     else:
                                         state['repair_targeted_reads_used']=used+1
                                     state['repair_force_reflection']=True
