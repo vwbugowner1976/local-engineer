@@ -1255,12 +1255,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                 readonly=fn in ('read_file','search_text','list_files','git_status','git_diff')
                 experiment_budget_exhausted=False
                 tool_gate_violation=False
-                if readonly and state.get('hypothesis_ready') and not edited:
+                if readonly and not edited and (state.get('hypothesis_ready') or state.get('experiment_required')):
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
                     if state['discovery_after_hypothesis']>=5:
-                        if state.get('experiment_required'):
-                            state['status']='blocked'
-                            state['next_action']='Discovery budget exhausted after an evidence-based hypothesis; checkpoint saved for human review.'
+                        state['status']='blocked'
+                        state['next_action']='Discovery budget exhausted after an evidence-based hypothesis; checkpoint saved for human review.'
                         result=('exit=125\nDiscovery budget exhausted after an evidence-based hypothesis. '
                                 'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
                         experiment_budget_exhausted=True
