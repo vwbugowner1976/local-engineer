@@ -888,7 +888,7 @@ Never claim a test passed without a successful tool result. If blocked state the
     ])
     if project.cfg.get('task_mode')=='inspect':
         definitions=[tool for tool in definitions if tool['function']['name']!='test_project']
-    experiment_core={'replace_text','build_project','test_project','inspect_zmk_project','update_working_state','finish_task'}
+    experiment_core={'replace_text','build_project','test_project','finish_task'}
     # POST_EDIT_REPAIR is a closed loop: checkpoint persistence is automatic.
     # Do not expose update_working_state here; otherwise the model can spend
     # the repair budget narrating state instead of editing and verifying.
