@@ -1285,7 +1285,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                            and not (fn=='read_file' and (
                                (state.get('hypothesis_ready') and not edited)
                                or state.get('targeted_discovery_required')
-                               or (not edited and state.get('rounds',0)<8)))):
+                               or (not edited and state.get('rounds',0)<9)))):
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
                         if state.get('experiment_required'):
@@ -1505,7 +1505,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 bounded_read_gate = bool((not edited) and (
                     (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<5)
                     or state.get('targeted_discovery_required')
-                    or state.get('rounds',0)<8))
+                    or state.get('rounds',0)<9))
                 if not bounded_read_gate:
                     state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
                     save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
