@@ -136,6 +136,13 @@ class SafetyTests(unittest.TestCase):
         update=next(tool for tool in definitions if tool['function']['name']=='update_working_state')
         self.assertEqual(update['function']['parameters']['properties'],{})
 
+    def test_initial_discovery_and_post_hypothesis_read_budgets_are_bounded_but_not_too_small(self):
+        runtime=Path(__file__).with_name("engineer_runtime.py").read_text()
+        self.assertIn("state['rounds']>=8 and reflection_count==0",runtime)
+        self.assertIn("state.get('discovery_after_hypothesis',0)<4",runtime)
+        self.assertIn("state['discovery_after_hypothesis']>=5",runtime)
+        self.assertIn("up to four focused discovery calls are available",runtime)
+
     def test_build_project_has_no_model_supplied_extra_args(self):
         definitions=m.tool_defs('discovery')
         build=next(tool for tool in definitions if tool['function']['name']=='build_project')
