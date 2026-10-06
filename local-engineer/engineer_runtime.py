@@ -1418,7 +1418,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                     if (state.get('reflections_this_generation',0)>=1 and
                         state['failed_verification_discovery_calls']>=5):
                         state['status']='blocked'
-                        state['next_action']='Failed verification remained unresolved after bounded discovery and two evidence reviews; checkpoint saved for human review.'
+                        state['next_action']='Failed verification remained unresolved after bounded discovery and one evidence review; checkpoint saved for human review.'
                         save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
                 if fn=='read_file' and state.get('targeted_discovery_required') and success:
                     state['targeted_discovery_calls']=state.get('targeted_discovery_calls',0)+1
