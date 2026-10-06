@@ -1013,12 +1013,14 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflect_post_edit('post-edit verification failure')
             if not edited and project.cfg.get('task_mode')!='inspect':
                 reflection_count=state.get('reflections_this_generation',0)
-                if state.get('force_reflection') and reflection_count<2:
+                if state.get('force_reflection') and reflection_count<1:
                     reflect('resume with unedited failed verification')
-                elif state['rounds']>9 and reflection_count==0:
+                elif state['rounds']>=9 and reflection_count==0:
                     reflect('initial discovery stalled')
-                elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<1:
-                    reflect('failed verification remained unresolved after bounded discovery')
+                elif verification_failed() and state.get('discovery_after_hypothesis',0)>=5 and reflection_count>=1:
+                    state['status']='blocked'
+                    state['next_action']='Failed verification remained unresolved after the bounded five-read discovery budget; checkpoint saved for human review.'
+                    save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
                 if state.get('status')=='blocked':
                     save(); return 2
             # Build the prompt from a bounded set of context tiers. The actual
