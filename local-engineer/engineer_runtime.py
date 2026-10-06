@@ -842,8 +842,6 @@ def _run_agent(m,project,task,resume=None):
             if state['targeted_discovery_reviews']>=2:
                 state['status']='blocked'
                 state['next_action']='No safe edit target was identified after two bounded evidence reviews; checkpoint saved for human review.'
-        else:
-            state['targeted_discovery_reviews']=0
         state['experiment_state_updates']=0
         # Keep the bounded post-hypothesis discovery count cumulative across
         # reflection. A reflection reviews the evidence; it must not refund reads.
