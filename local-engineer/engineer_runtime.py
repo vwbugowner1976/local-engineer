@@ -1011,8 +1011,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflect_post_edit('post-edit verification failure')
             if not edited and project.cfg.get('task_mode')!='inspect':
                 reflection_count=state.get('reflections_this_generation',0)
-                if state.get('force_reflection') and reflection_count<1:
-                    reflect('resume with unedited failed verification')
+                if state.get('force_reflection') and reflection_count < (2 if state.get('targeted_discovery_required') else 1):
+                    reflect('resume with unedited failed verification' if not state.get('targeted_discovery_required') else 'targeted evidence review')
                 elif state['rounds']>=9 and reflection_count==0:
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('discovery_after_hypothesis',0)>=5 and reflection_count>=1:
@@ -1046,7 +1046,14 @@ Never claim a test passed without a successful tool result. If blocked state the
             for item in recent:
                 compact_item=dict(item)
                 if isinstance(compact_item.get('content'),str):
-                    compact_item['content']=compact_item['content'][:1200]
+                    content=compact_item['content']
+                    if len(content)>1200:
+                        continuation_markers=re.findall(r'\[Continue with start_line=\d+;[^\]]*\]',content)
+                        compact_item['content']=content[:1200]
+                        if continuation_markers:
+                            compact_item['content']+='\n'+continuation_markers[-1]
+                    else:
+                        compact_item['content']=content
                 if isinstance(compact_item.get('tool_calls'),list):
                     compact_calls=[]
                     for call in compact_item['tool_calls'][:8]:
