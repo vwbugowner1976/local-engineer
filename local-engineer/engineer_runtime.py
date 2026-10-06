@@ -931,10 +931,10 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<1 else set())
@@ -977,7 +977,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflection_count=state.get('reflections_this_generation',0)
                 if state.get('force_reflection') and reflection_count<2:
                     reflect('resume with unedited failed verification')
-                elif state['rounds']>=4 and reflection_count==0:
+                elif state['rounds']>=8 and reflection_count==0:
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
                     reflect('failed verification remained unresolved after bounded discovery')
@@ -1195,7 +1195,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 tool_gate_violation=False
                 if readonly and state.get('hypothesis_ready') and not edited:
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
-                    if state['discovery_after_hypothesis']>=3:
+                    if state['discovery_after_hypothesis']>=5:
                         result=('exit=125\nDiscovery budget exhausted after an evidence-based hypothesis. '
                                 'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
                         experiment_budget_exhausted=True
@@ -1280,7 +1280,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                         result=m.dispatch(project,fn,args)
                     if readonly: state['cache'][key]=result
                 if readonly and state.get('experiment_required') and not experiment_budget_exhausted:
-                    result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; only one more discovery call is available unless a specific missing fact prevents the edit.]'
+                    result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; up to four focused discovery calls are available when a specific missing fact prevents the edit.]'
                 tool_elapsed=time.monotonic()-tool_started
                 state['tool_calls']+=1
                 state['pending_tool']=None
