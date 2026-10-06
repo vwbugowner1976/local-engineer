@@ -671,13 +671,20 @@ def _run_agent(m,project,task,resume=None):
         saved=state.get('repair_read_continuation')
         if saved and (not path or saved[0]==path):
             return tuple(saved)
+        # Only the most recent cached read may authorize a continuation.
+        # An older truncated read is no longer actionable after a later normal read;
+        # otherwise the exhausted budget can be reopened by stale cache evidence.
         allowed=set(state.get('repair_allowed_reads',[]))
-        for key,value in reversed(list(state.get('cache',{}).items())):
+        cached_reads=[]
+        for key,value in state.get('cache',{}).items():
             if ':read_file:' not in key: continue
             try: args=json.loads(key.split(':read_file:',1)[1])
             except (TypeError,ValueError): continue
             candidate=args.get('path','')
-            if candidate not in allowed or (path and candidate!=path): continue
+            if candidate in allowed and (not path or candidate==path):
+                cached_reads.append((key,candidate,value))
+        if cached_reads:
+            _,candidate,value=cached_reads[-1]
             match=re.search(r'Continue with start_line=(\d+)',str(value))
             if match: return candidate,int(match.group(1))
         return None
