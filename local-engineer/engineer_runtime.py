@@ -907,7 +907,10 @@ Never claim a test passed without a successful tool result. If blocked state the
     ])
     if project.cfg.get('task_mode')=='inspect':
         definitions=[tool for tool in definitions if tool['function']['name']!='test_project']
-    experiment_core={'replace_text','build_project','test_project','finish_task'}
+    # After an evidence-based hypothesis, the model may only perform the edit.
+    # A successful edit immediately triggers automatic build/test/diff verification,
+    # so exposing build_project here only invites baseline/repeated builds.
+    experiment_core={'replace_text','finish_task'}
     # POST_EDIT_REPAIR is a closed loop: checkpoint persistence is automatic.
     # Do not expose update_working_state here; otherwise the model can spend
     # the repair budget narrating state instead of editing and verifying.
@@ -996,7 +999,7 @@ Never claim a test passed without a successful tool result. If blocked state the
             if state.get('phase')=='post_edit_repair':
                 user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, prefer replace_text over write_file when changing an existing file. replace_text accepts a project-relative path or an absolute path that is strictly inside the project; outside paths are rejected. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
             elif state.get('experiment_required'):
-                user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Prefer the smallest safe replace_text/write_file edit followed by build/test. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, use update_working_state to state the missing fact and finish with a blocked report.'
+                user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Make the smallest safe replace_text edit now. Do not run a baseline build before the edit; a successful edit automatically triggers the registered build/test/diff verification. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, finish with a specific blocker.'
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
             # Replay at most one compacted round. Limit each message independently so a large
             # build/search result cannot dominate the next request; the full result is preserved in state/events.
