@@ -56,6 +56,34 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(target.read_text(),'activeName.textContent = heroPeer?.name;\n')
         self.assertNotIn('code.py',self.project.agent_modified)
 
+    def test_replace_text_normalizes_project_local_absolute_path(self):
+        target=self.root/'code.py'
+        target.write_text('value = 0\n')
+        self.project.backup_root=self.root/'backup'
+        self.project.agent_modified=set()
+        rc,out=self.project.replace_text(str(target),'value = 0','value = 1')
+        self.assertEqual(rc,0,out)
+        self.assertEqual(target.read_text(),'value = 1\n')
+        self.assertIn('code.py',self.project.agent_modified)
+
+    def test_replace_text_rejects_absolute_path_outside_project(self):
+        with tempfile.TemporaryDirectory() as outside:
+            target=pathlib.Path(outside)/'code.py'
+            target.write_text('value = 0\n')
+            rc,out=self.project.replace_text(str(target),'value = 0','value = 1')
+            self.assertEqual(rc,126)
+            self.assertIn('inside the project',out)
+            self.assertEqual(target.read_text(),'value = 0\n')
+
+    def test_replace_text_reports_actual_occurrence_count(self):
+        target=self.root/'code.py'
+        target.write_text('value = 0\nvalue = 0\n')
+        self.project.backup_root=self.root/'backup'
+        rc,out=self.project.replace_text('code.py','value = 0','value = 1',count=1)
+        self.assertEqual(rc,3)
+        self.assertIn('requested 1, found 2',out)
+        self.assertEqual(target.read_text(),'value = 0\nvalue = 0\n')
+
     def test_ignored_preexisting_file_should_block_full_overwrite(self):
         (self.root/'.gitignore').write_text('local-settings.json\n')
         target=self.root/'local-settings.json'
