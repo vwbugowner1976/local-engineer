@@ -807,9 +807,11 @@ def _run_agent(m,project,task,resume=None):
         smallest=str(structured.get('smallest_edit','')).strip()
         expected=str(structured.get('expected_effect','')).strip()
         hypothesis=str(structured.get('hypothesis','')).strip() or note.strip()
-        if not target and len(source_paths)==1 and 'no safe edit target' not in hypothesis.lower(): target=source_paths[0]
-        if not smallest and target and 'no safe edit target' not in hypothesis.lower(): smallest=hypothesis
-        if not expected and target and 'no safe edit target' not in hypothesis.lower(): expected=hypothesis
+        missing_evidence=str(structured.get('missing_evidence','')).strip()
+        explicit_no_target=bool(missing_evidence) or 'no safe edit target' in hypothesis.lower()
+        if not target and len(source_paths)==1 and not explicit_no_target: target=source_paths[0]
+        if not smallest and target and not explicit_no_target: smallest=hypothesis
+        if not expected and target and not explicit_no_target: expected=hypothesis
         usage=response.get('usage',{})
         state['prompt_tokens']+=usage.get('prompt_tokens',0)
         state['completion_tokens']+=usage.get('completion_tokens',0)
@@ -1230,6 +1232,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                 if readonly and state.get('hypothesis_ready') and not edited:
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
                     if state['discovery_after_hypothesis']>=5:
+                        if state.get('experiment_required'):
+                            state['status']='blocked'
+                            state['next_action']='Discovery budget exhausted after an evidence-based hypothesis; checkpoint saved for human review.'
                         result=('exit=125\nDiscovery budget exhausted after an evidence-based hypothesis. '
                                 'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
                         experiment_budget_exhausted=True
@@ -1241,7 +1246,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                 elif (fn=='read_file' and state.get('phase')=='post_edit_repair' and key in state['cache']):
                     result='exit=125\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
                     repeats[key]=repeats.get(key,0)+1
-                elif readonly and key in state['cache']:
+                elif (readonly and key in state['cache']
+                      and not (fn=='read_file' and state.get('hypothesis_ready') and not edited)):
                     result=state['cache'][key]; state['cache_hits']+=1
                     repeats[key]=repeats.get(key,0)+1
                     result+='\n[CACHED: already inspected with no intervening change. Do not repeat this call. Use finish_task if the evidence answers the question, or investigate a different specific missing fact.]'
@@ -1302,6 +1308,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                                 result=m.dispatch(project,fn,args)
                                 if result.startswith('exit=0'):
                                     marker=re.search(r'Continue with start_line=(\d+)',result)
+                                    if not marker and requested_path:
+                                        try:
+                                            requested_end=int(args.get('end_line',160) or 160)
+                                        except (TypeError,ValueError):
+                                            requested_end=160
+                                        line_count_match=re.search(r'\((\d+) lines\)',result)
+                                        if line_count_match and requested_end < int(line_count_match.group(1)):
+                                            result += '\n[Continue with start_line=%d; no middle lines were omitted.]' % (requested_end+1)
+                                            marker=re.search(r'Continue with start_line=(\d+)',result)
                                     if marker and requested_path:
                                         state['repair_read_continuation']=[requested_path,int(marker.group(1))]
                                     if is_continuation:
