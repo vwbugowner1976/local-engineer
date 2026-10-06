@@ -831,6 +831,9 @@ def _run_agent(m,project,task,resume=None):
         state['targeted_discovery_calls']=0
         if state['targeted_discovery_required']:
             state['targeted_discovery_reviews']=state.get('targeted_discovery_reviews',0)+1
+            if state['targeted_discovery_reviews']>=2:
+                state['status']='blocked'
+                state['next_action']='No safe edit target was identified after two bounded evidence reviews; checkpoint saved for human review.'
         else:
             state['targeted_discovery_reviews']=0
         state['experiment_state_updates']=0
