@@ -900,6 +900,13 @@ Never claim a test passed without a successful tool result. If blocked state the
                     or _repair_continuation()) and state.get('repair_allowed_reads'):
                 names.add('read_file')
             return [tool for tool in definitions if tool['function']['name'] in names]
+        # Once an evidence-based hypothesis exists, stop broad discovery even
+        # when the task is not in a failed-verification repair cycle. A normal fix
+        # must move from hypothesis -> minimal edit -> verification instead of
+        # letting the model browse indefinitely.
+        if state.get('hypothesis_ready') and not edited:
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
+            return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
             names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<2 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
@@ -1160,11 +1167,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                 readonly=fn in ('read_file','search_text','list_files','git_status','git_diff')
                 experiment_budget_exhausted=False
                 tool_gate_violation=False
-                if readonly and state.get('experiment_required') and not edited:
+                if readonly and state.get('hypothesis_ready') and not edited:
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
                     if state['discovery_after_hypothesis']>=3:
-                        result=('exit=125\nExperiment required after an evidence-based hypothesis. Discovery budget is exhausted; '
-                                'make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
+                        result=('exit=125\nDiscovery budget exhausted after an evidence-based hypothesis. '
+                                'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
                         experiment_budget_exhausted=True
                 if experiment_budget_exhausted:
                     pass
