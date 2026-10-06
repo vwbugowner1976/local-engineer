@@ -1014,7 +1014,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflection_count=state.get('reflections_this_generation',0)
                 if state.get('force_reflection') and reflection_count<1:
                     reflect('resume with unedited failed verification')
-                elif state['rounds']>=8 and reflection_count==0:
+                elif state['rounds']>8 and reflection_count==0:
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<1:
                     reflect('failed verification remained unresolved after bounded discovery')
