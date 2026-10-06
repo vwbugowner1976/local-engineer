@@ -473,7 +473,7 @@ def _run_agent(m,project,task,resume=None):
            'hypothesis_ready':False,'experiment_required':False,
            'discovery_after_hypothesis':0,'hypothesis_generation':None,
            'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
-           'targeted_discovery_required':False,'targeted_discovery_calls':0,
+           'targeted_discovery_required':False,'targeted_discovery_calls':0,'targeted_discovery_reviews':0,
            'experiment_state_updates':0,
            'phase':'normal','repair_attempts':0,'repair_max_attempts':2,
            'repair_targeted_reads_used':0,'repair_max_targeted_reads':2,
@@ -510,7 +510,7 @@ def _run_agent(m,project,task,resume=None):
         for key,default in {'hypothesis_ready':False,'experiment_required':False,
                             'discovery_after_hypothesis':0,'hypothesis_generation':None,
                             'hypothesis_target_file':'','hypothesis_expected_effect':'','hypothesis_smallest_edit':'',
-                            'targeted_discovery_required':False,'targeted_discovery_calls':0,
+                            'targeted_discovery_required':False,'targeted_discovery_calls':0,'targeted_discovery_reviews':0,
                             'experiment_state_updates':0,
                             'reflections_this_generation':0,
                             'failed_verification_discovery_calls':0,
@@ -548,6 +548,7 @@ def _run_agent(m,project,task,resume=None):
             state['discovery_after_hypothesis']=0
             state['targeted_discovery_required']=False
             state['targeted_discovery_calls']=0
+            state['targeted_discovery_reviews']=0
             state['experiment_state_updates']=0
             state['next_action']='Re-evaluate the prior hypothesis against the failed verification before further discovery.'
         prior_reads=[key for key in old.get('cache',{}) if ':read_file:' in key][-3:]
@@ -828,6 +829,10 @@ def _run_agent(m,project,task,resume=None):
         state['experiment_required']=bool(target and smallest and expected)
         state['targeted_discovery_required']=bool(failed_context and not state['experiment_required'])
         state['targeted_discovery_calls']=0
+        if state['targeted_discovery_required']:
+            state['targeted_discovery_reviews']=state.get('targeted_discovery_reviews',0)+1
+        else:
+            state['targeted_discovery_reviews']=0
         state['experiment_state_updates']=0
         state['discovery_after_hypothesis']=0
         state['hypothesis_generation']=state['generation'] if state['hypothesis_ready'] else None
@@ -999,6 +1004,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     reflect('initial discovery stalled')
                 elif verification_failed() and state.get('failed_verification_discovery_calls',0)>=6 and reflection_count<2:
                     reflect('failed verification remained unresolved after bounded discovery')
+                if state.get('status')=='blocked':
+                    save(); return 2
             # Build the prompt from a bounded set of context tiers. The actual
             # server template/tokenizer is authoritative; character limits are only
             # the first guard because tool schemas and chat-template overhead also count.
