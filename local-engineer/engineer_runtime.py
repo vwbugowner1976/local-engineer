@@ -817,7 +817,9 @@ def _run_agent(m,project,task,resume=None):
         state['completion_tokens']+=usage.get('completion_tokens',0)
         state['reflection_calls']=state.get('reflection_calls',0)+1
         state['reflections_this_generation']=state.get('reflections_this_generation',0)+1
-        state['failed_verification_discovery_calls']=0
+        # Preserve the bounded post-hypothesis discovery count across the evidence
+        # review; the five-read gate is cumulative for this failed-verification cycle.
+        state['failed_verification_discovery_calls']=state.get('failed_verification_discovery_calls',0)
         state['force_reflection']=False
         state['hypothesis']=hypothesis[:1800]
         state['hypothesis_target_file']=target[:500]
@@ -1486,8 +1488,13 @@ Never claim a test passed without a successful tool result. If blocked state the
             save()
             if edited_this_round and not defer_edit_batch: verify_now()
             if max(repeats.values(),default=0)>=4:
-                state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
-                save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
+                bounded_read_gate = bool((not edited) and (
+                    (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<5)
+                    or state.get('targeted_discovery_required')
+                    or state.get('rounds',0)<8))
+                if not bounded_read_gate:
+                    state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
+                    save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
         state['status']='budget_exhausted'; save()
         print('[paused] round budget reached; resume checkpoint: '+str(checkpoint),flush=True)
         return 2
