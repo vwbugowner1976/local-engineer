@@ -796,6 +796,8 @@ class SafetyTests(unittest.TestCase):
             self.assertNotIn('run_command',names)
             self.assertIn('replace_text',names)
             self.assertNotIn('write_file',names)
+            self.assertNotIn('inspect_zmk_project',names)
+            self.assertNotIn('update_working_state',names)
             self.assertIn('test_project',names)
             return tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
         final={'choices':[{'message':{'content':'Result: edit verified.'}}]}
