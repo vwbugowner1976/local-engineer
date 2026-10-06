@@ -1319,7 +1319,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                                         except (TypeError,ValueError):
                                             requested_end=160
                                         line_count_match=re.search(r'\((\d+) lines\)',result)
-                                        if line_count_match and requested_end < int(line_count_match.group(1)):
+                                        line_count = int(line_count_match.group(1)) if line_count_match else None
+                                        if line_count is None:
+                                            try:
+                                                raw_rc, raw_text = project._raw_read(requested_path)
+                                                if raw_rc == 0:
+                                                    line_count = len(raw_text.splitlines())
+                                            except (AttributeError, TypeError, ValueError):
+                                                line_count = None
+                                        if line_count is not None and requested_end < line_count:
                                             result += '\n[Continue with start_line=%d; no middle lines were omitted.]' % (requested_end+1)
                                             marker=re.search(r'Continue with start_line=(\d+)',result)
                                     if marker and requested_path:
@@ -1440,14 +1448,6 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['cache']={}
                 if readonly and verification_failed() and not edited:
                     state['failed_verification_discovery_calls']=state.get('failed_verification_discovery_calls',0)+1
-                    # One evidence review per generation is enough to recover from
-                    # a bad hypothesis. Further browsing after that is a semantic stall,
-                    # even when each call uses different arguments.
-                    if (state.get('reflections_this_generation',0)>=1 and
-                        state['failed_verification_discovery_calls']>=5):
-                        state['status']='blocked'
-                        state['next_action']='Failed verification remained unresolved after bounded discovery and one evidence review; checkpoint saved for human review.'
-                        save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
                 if fn=='read_file' and state.get('targeted_discovery_required') and success:
                     state['targeted_discovery_calls']=state.get('targeted_discovery_calls',0)+1
                     # Keep the unresolved-target flag until a concrete edit target is
