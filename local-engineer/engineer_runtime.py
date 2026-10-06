@@ -965,6 +965,8 @@ Never claim a test passed without a successful tool result. If blocked state the
     # git_diff is repair evidence generated automatically by reflect_post_edit;
     # never expose it as a model tool during POST_EDIT_REPAIR.
     def active_definitions():
+        # Four focused reads are the warning threshold; the fifth is the final bounded read.
+        # state.get('discovery_after_hypothesis',0)<4
         if state.get('phase')=='post_edit_repair':
             names=set(repair_core)
             if state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>0:
@@ -978,10 +980,10 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<6 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<6 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<2 else set())
@@ -1263,6 +1265,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                                 'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
                         experiment_budget_exhausted=True
                 if experiment_budget_exhausted:
+                    # The fifth bounded discovery call is the final call: execute it,
+                    # record the exhausted gate, then stop before another model round.
                     pass
                 elif (fn=='git_diff' and state.get('phase')=='post_edit_repair' and (state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>=1)):
                     result='exit=125\nPOST_EDIT_REPAIR git_diff already supplied as repair evidence; make the smallest follow-up edit now, then build/test.'
@@ -1380,6 +1384,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                     if readonly: state['cache'][key]=result
                 if readonly and state.get('experiment_required') and not experiment_budget_exhausted:
                     result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; up to four focused discovery calls are available before the fifth and final bounded read when a specific missing fact prevents the edit.]'
+                if experiment_budget_exhausted and state.get('status')=='blocked':
+                    state['pending_tool']=None
+                    state['tool_calls']+=1
+                    record({'tool':fn,'args':args,'result':result,'generation':state['generation']})
+                    state['recent_messages']=[{'role':'assistant','content':msg.get('content'),'tool_calls':[call]},
+                                             {'role':'tool','tool_call_id':call['id'],'content':result}]
+                    save()
+                    print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True)
+                    return 2
                 tool_elapsed=time.monotonic()-tool_started
                 state['tool_calls']+=1
                 state['pending_tool']=None
