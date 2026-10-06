@@ -786,7 +786,11 @@ def _run_agent(m,project,task,resume=None):
         # verification. Keep that experiment gate even if an old checkpoint has
         # incomplete status fields after migration.
         failed_context=verification_failed() or reason.startswith('resume with unedited failed verification')
-        state['experiment_required']=bool(failed_context and target and smallest and expected)
+        # An actionable hypothesis is itself the experiment gate. This applies
+        # to normal repair work too, not only resumed failed-verification tasks.
+        # Once target/effect/edit are concrete, the agent must stop broad discovery
+        # and test the hypothesis with the smallest safe edit.
+        state['experiment_required']=bool(target and smallest and expected)
         state['targeted_discovery_required']=bool(failed_context and not state['experiment_required'])
         state['targeted_discovery_calls']=0
         state['experiment_state_updates']=0
@@ -1365,13 +1369,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['next_action']='Controlled discovery reopen: previous repair hypothesis family was insufficient. Search only for the exact missing dependency named by the repair evidence; do not repeat the rejected hypothesis.'
                     record({'phase_transition':'REOPEN_DISCOVERY','reason':state['repair_reopen_reason']})
                 if experiment_budget_exhausted:
-                    state['status']='blocked'
-                    state['next_action']='Evidence-based hypothesis was ready, but no edit followed within the bounded discovery allowance; checkpoint saved.'
-                    save(); print('[blocked] experiment discovery budget reached; checkpoint saved',flush=True); return 2
+                    # Do not terminate on the first rejected discovery call. Feed the
+                    # gate result back to the model so it can choose the already-enabled
+                    # edit/build tools on the next round.
+                    state['next_action']='Discovery budget exhausted after an actionable hypothesis. Make the smallest safe edit now and run build/test.'
                 if tool_gate_violation:
-                    state['status']='blocked'
-                    state['next_action']='A tool outside the current safe experiment gate was requested; checkpoint saved without an edit.'
-                    save(); print('[blocked] experiment tool gate rejected unavailable tool; checkpoint saved',flush=True); return 2
+                    # Likewise, an unavailable discovery tool is a recoverable model
+                    # mistake while the experiment gate is active. Keep the checkpoint
+                    # alive and let the next round select an allowed edit/verification tool.
+                    state['next_action']='That discovery tool is outside the current experiment gate. Use the actionable hypothesis and make the smallest safe edit, then build/test.'
                 if fn=='update_working_state' and state.get('experiment_required') and state.get('experiment_state_updates',0)>2:
                     state['status']='blocked'
                     state['next_action']='Experiment state updates repeated without an edit or registered verification; checkpoint saved.'
