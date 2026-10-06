@@ -971,10 +971,10 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<2 else set())
@@ -1342,8 +1342,6 @@ Never claim a test passed without a successful tool result. If blocked state the
                                         if line_count is not None and requested_end < line_count:
                                             result += '\n[Continue with start_line=%d; no middle lines were omitted.]' % (requested_end+1)
                                             marker=re.search(r'Continue with start_line=(\d+)',result)
-                                    if marker and requested_path:
-                                        state['repair_read_continuation']=[requested_path,int(marker.group(1))]
                                     if marker and requested_path:
                                         state['repair_read_continuation']=[requested_path,int(marker.group(1))]
                                     elif not is_continuation:
