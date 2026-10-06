@@ -136,6 +136,12 @@ class SafetyTests(unittest.TestCase):
         update=next(tool for tool in definitions if tool['function']['name']=='update_working_state')
         self.assertEqual(update['function']['parameters']['properties'],{})
 
+    def test_build_project_has_no_model_supplied_extra_args(self):
+        definitions=m.tool_defs('discovery')
+        build=next(tool for tool in definitions if tool['function']['name']=='build_project')
+        self.assertEqual(build['function']['parameters']['properties'],{})
+        self.assertEqual(build['function']['parameters'].get('required',[]),[])
+
     def test_zmk_destination_project_name_comes_from_registry_label_or_explicit_metadata(self):
         manifest=self.root/'config'/'west.yml'
         manifest.parent.mkdir()
