@@ -235,13 +235,32 @@ else:
                 self.agent_modified=getattr(self,'agent_modified',set()) | {path}
             return rc, out or 'wrote '+path
 
+        def _edit_rel(self, path):
+            # Bonsai sometimes echoes the absolute project path from inspection output.
+            # Normalize an absolute path only when it is strictly inside this project;
+            # paths outside the project remain rejected.
+            raw=str(path)
+            p=pathlib.PurePosixPath(raw)
+            if p.is_absolute():
+                root=pathlib.PurePosixPath(str(self.root).rstrip('/')).as_posix()
+                value=p.as_posix()
+                prefix=root+'/'
+                if value.startswith(prefix):
+                    raw=value[len(prefix):]
+                else:
+                    raise ValueError('absolute edit path must stay inside the project')
+            return m.safe_rel(raw)
+
         def replace_text(self, path, old, new, count=1):
             self.check_edit()
+            path=self._edit_rel(path)
             if not old or int(count)<1: return 126, 'old must be nonempty and count positive'
             if old == new: return 126, 'replacement must change the matched text'
             rc,text=self._raw_read(path)
             if rc: return rc,text
-            if text.count(old) != int(count): return 3,'old text occurrence count must match exactly'
+            actual=text.count(old)
+            if actual != int(count):
+                return 3,'old text occurrence count mismatch: requested %d, found %d; reread the exact target lines before retrying' % (int(count),actual)
             self._backup(path,text)
             rc,out=self._file(path,'write',text.replace(old,new,int(count)))
             if rc == 0: self.agent_modified=getattr(self,'agent_modified',set()) | {path}
@@ -975,7 +994,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                         +'\nWorking state: '+compact_json[:state_n])
             user=prompt_user()
             if state.get('phase')=='post_edit_repair':
-                user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, paths must be project-relative; prefer replace_text over write_file when changing an existing file. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
+                user+='\nPOST_EDIT_REPAIR: the previous edit failed verification. Broad list/search/run_command and unrelated reads are unavailable. update_working_state is also unavailable; checkpoint persistence is automatic. Use the supplied previous hypothesis, current diff, failure class, expected/actual, and any cached targeted evidence. If read_file is available, it is limited to repair_allowed_reads and at most two successful targeted reads total, plus one exact continuation when an allowed read ended with a Continue with start_line marker. Prefer a minimal re-edit followed by registered verification. For edits, prefer replace_text over write_file when changing an existing file. replace_text accepts a project-relative path or an absolute path that is strictly inside the project; outside paths are rejected. Do not call git_diff again after it has been supplied once in this repair cycle, especially after an edit rejection.'
             elif state.get('experiment_required'):
                 user+='\nExperiment gate: a failing verification and source evidence produced a hypothesis. Prefer the smallest safe replace_text/write_file edit followed by build/test. Discovery is allowed only to obtain one concrete missing fact required to identify the edit target. If no safe edit target can be named, use update_working_state to state the missing fact and finish with a blocked report.'
             messages=[{'role':'system','content':system},{'role':'user','content':user}]
