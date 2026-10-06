@@ -1008,7 +1008,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                 uncertain_edit_read_pending=False
             state['rounds']+=1
             ollaya_observer.observe(state, task)
-            if state.get('phase')=='post_edit_repair' and state.get('repair_force_reflection'):
+            if (state.get('phase')=='post_edit_repair' and state.get('repair_force_reflection')
+                    and state.get('reflections_this_generation',0)<1):
                 reflect_post_edit('post-edit verification failure')
             if not edited and project.cfg.get('task_mode')!='inspect':
                 reflection_count=state.get('reflections_this_generation',0)
