@@ -253,8 +253,10 @@ else:
 
         def replace_text(self, path, old, new, count=1):
             self.check_edit()
-            path=self._edit_rel(path)
-            if not old or int(count)<1: return 126, 'old must be nonempty and count positive'
+            try:
+                path=self._edit_rel(path)
+            except (TypeError, ValueError) as error:
+                return 126, str(error)
             if old == new: return 126, 'replacement must change the matched text'
             rc,text=self._raw_read(path)
             if rc: return rc,text
