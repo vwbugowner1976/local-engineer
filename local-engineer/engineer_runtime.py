@@ -884,7 +884,7 @@ Never claim a test passed without a successful tool result. If blocked state the
     definitions.extend([
         {'type':'function','function':{'name':'finish_task','description':'Finish the task now when evidence is sufficient. Use this for the final report instead of repeating reads.','parameters':{'type':'object','properties':{'report':{'type':'string'}},'required':['report']}}},
         {'type':'function','function':{'name':'test_project','description':'Run the registered test command.','parameters':{'type':'object','properties':{}}}},
-        {'type':'function','function':{'name':'update_working_state','description':'Save concise hypothesis, evidence, remaining tasks and next action.','parameters':{'type':'object','properties':{k:{'type':'string'} for k in ('hypothesis','supporting_evidence','remaining_tasks','next_action')}}}}
+        {'type':'function','function':{'name':'update_working_state','description':'Checkpoint the current working state. State is already persisted automatically; this tool takes no arguments.','parameters':{'type':'object','properties':{}}}}
     ])
     if project.cfg.get('task_mode')=='inspect':
         definitions=[tool for tool in definitions if tool['function']['name']!='test_project']
