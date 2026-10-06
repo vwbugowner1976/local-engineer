@@ -978,10 +978,10 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<6 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<6 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<2 else set())
@@ -1025,9 +1025,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                 reflection_count=state.get('reflections_this_generation',0)
                 if state.get('force_reflection') and reflection_count < (2 if state.get('targeted_discovery_required') else 1):
                     reflect('resume with unedited failed verification' if not state.get('targeted_discovery_required') else 'targeted evidence review')
-                elif state['rounds']>=9 and reflection_count==0:
+                elif state['rounds']>=8 and reflection_count==0:
                     reflect('initial discovery stalled')
-                elif verification_failed() and state.get('discovery_after_hypothesis',0)>=5 and reflection_count>=1:
+                elif verification_failed() and state.get('discovery_after_hypothesis',0)>5 and reflection_count>=1:
                     state['status']='blocked'
                     state['next_action']='Failed verification remained unresolved after the bounded five-read discovery budget; checkpoint saved for human review.'
                     save(); print('[blocked] semantic discovery budget reached; checkpoint saved',flush=True); return 2
@@ -1297,7 +1297,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                            and not (fn=='read_file' and (
                                (state.get('hypothesis_ready') and not edited)
                                or state.get('targeted_discovery_required')
-                               or (not edited and state.get('rounds',0)<9)))):
+                               or (not edited and state.get('rounds',0)<8)))):
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
                         if state.get('experiment_required'):
@@ -1379,7 +1379,7 @@ Never claim a test passed without a successful tool result. If blocked state the
                         result=m.dispatch(project,fn,args)
                     if readonly: state['cache'][key]=result
                 if readonly and state.get('experiment_required') and not experiment_budget_exhausted:
-                    result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; up to four focused discovery calls are available when a specific missing fact prevents the edit.]'
+                    result+='\n[EXPERIMENT REQUIRED: hypothesis is ready. Make the smallest safe edit and run build/test; up to four focused discovery calls are available before the fifth and final bounded read when a specific missing fact prevents the edit.]'
                 tool_elapsed=time.monotonic()-tool_started
                 state['tool_calls']+=1
                 state['pending_tool']=None
@@ -1519,9 +1519,9 @@ Never claim a test passed without a successful tool result. If blocked state the
             if edited_this_round and not defer_edit_batch: verify_now()
             if max(repeats.values(),default=0)>=4:
                 bounded_read_gate = bool((not edited) and (
-                    (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<4)
+                    (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<5)
                     or state.get('targeted_discovery_required')
-                    or state.get('rounds',0)<9))
+                    or state.get('rounds',0)<8))
                 if not bounded_read_gate:
                     state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
                     save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
