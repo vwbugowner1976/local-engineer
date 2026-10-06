@@ -103,6 +103,11 @@ class SafetyTests(unittest.TestCase):
         repair_tool_names={tool['function']['name'] for tool in m.tool_defs('post_edit_repair')}
         self.assertIn('inspect_zmk_project',repair_tool_names)
 
+    def test_working_state_checkpoint_tool_has_no_freeform_arguments(self):
+        definitions=er.tool_defs('discovery')
+        update=next(tool for tool in definitions if tool['function']['name']=='update_working_state')
+        self.assertEqual(update['function']['parameters']['properties'],{})
+
     def test_zmk_destination_project_name_comes_from_registry_label_or_explicit_metadata(self):
         manifest=self.root/'config'/'west.yml'
         manifest.parent.mkdir()
