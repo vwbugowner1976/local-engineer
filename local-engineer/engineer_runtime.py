@@ -210,6 +210,7 @@ else:
                 selected.append(line[:m.MAX_OUTPUT-180])
                 used+=len(selected[-1])+1
             out='File: %s (%d lines)\n'%(path,len(lines))+'\n'.join(selected)
+            if next_line is None and end < len(lines): next_line=end+1
             if next_line: out+='\n[Continue with start_line=%d; no middle lines were omitted.]'%next_line
             return 0,out
 
@@ -961,13 +962,13 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
-            names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<1 else set())
+            names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<2 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         # Explicit read-only build investigations should reach the real build
         # before broad repository discovery. For ZMK, inspect the manifest first
@@ -1150,8 +1151,9 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['next_action']='The final report tool arguments were malformed. Retry finish_task with compact valid JSON, without additional discovery.'
                     state['tool_calls']+=1
                     error_result='exit=125\\nfinish_task: malformed tool arguments: '+repr(error)
+                    event_result='Malformed finish_task arguments rejected: '+repr(error)+'\\n'+error_result
                     record({'tool':'finish_task','args':{},'raw_arguments':raw_finish_args[:2000],
-                            'result':error_result,
+                            'result':event_result,
                             'generation':state['generation']})
                     recent=[
                         {'role':'assistant','content':msg.get('content'),
@@ -1262,8 +1264,10 @@ Never claim a test passed without a successful tool result. If blocked state the
                             print('[blocked] model attempted unavailable update_working_state; checkpoint saved',flush=True)
                             return 2
                     elif (repeats[key]>2 and fn!='update_working_state'
-                           and not (fn=='read_file' and (state.get('hypothesis_ready') and not edited
-                                                        or state.get('targeted_discovery_required')))):
+                           and not (fn=='read_file' and (
+                               (state.get('hypothesis_ready') and not edited)
+                               or state.get('targeted_discovery_required')
+                               or (not edited and state.get('rounds',0)<8)))):
                         result='exit=125\nNo state change since identical call. Change the hypothesis or report a blocker.'
                     elif fn=='update_working_state':
                         if state.get('experiment_required'):
@@ -1424,8 +1428,8 @@ Never claim a test passed without a successful tool result. If blocked state the
                     state['targeted_discovery_calls']=state.get('targeted_discovery_calls',0)+1
                     # Keep the unresolved-target flag until a concrete edit target is
                     # identified. The hypothesis gate still permits bounded reads.
-                    state['force_reflection']=False
-                    state['next_action']='Targeted evidence was read; continue the bounded evidence review or make the actionable minimal edit.'
+                    state['force_reflection']=True
+                    state['next_action']='Targeted evidence was read; re-evaluate the bounded evidence before editing.'
                 if (state.get('phase')=='post_edit_repair' and
                     state.get('repair_attempts',0)>=state.get('repair_max_attempts',2) and
                     state.get('repair_targeted_reads_used',0)>=state.get('repair_max_targeted_reads',2) and
