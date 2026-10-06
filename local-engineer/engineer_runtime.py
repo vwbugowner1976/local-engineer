@@ -971,10 +971,10 @@ Never claim a test passed without a successful tool result. If blocked state the
         # must move from hypothesis -> minimal edit -> verification instead of
         # letting the model browse indefinitely.
         if state.get('hypothesis_ready') and not edited:
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('experiment_required'):
-            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<5 else set())
+            names=experiment_core | ({'read_file'} if state.get('discovery_after_hypothesis',0)<4 else set())
             return [tool for tool in definitions if tool['function']['name'] in names]
         if state.get('targeted_discovery_required'):
             names=experiment_core | ({'read_file'} if state.get('targeted_discovery_calls',0)<2 else set())
@@ -1514,7 +1514,7 @@ Never claim a test passed without a successful tool result. If blocked state the
             if edited_this_round and not defer_edit_batch: verify_now()
             if max(repeats.values(),default=0)>=4:
                 bounded_read_gate = bool((not edited) and (
-                    (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<5)
+                    (state.get('hypothesis_ready') and state.get('discovery_after_hypothesis',0)<4)
                     or state.get('targeted_discovery_required')
                     or state.get('rounds',0)<9))
                 if not bounded_read_gate:
