@@ -722,9 +722,10 @@ def _run_agent(m,project,task,resume=None):
             state['repair_current_diff']=diff
         previous_hypothesis=state.get('repair_previous_hypothesis') or state.get('hypothesis','')
         cached_targeted_evidence={}
-        # Keep the identity of evidence supplied to the repair reflection separate
-        # from the transient read cache, which verification may invalidate.
-        repair_cached_reads=[]
+        # Preserve identities restored from the checkpoint: verify_now clears the
+        # transient cache before this reflection runs, but those reads still count as
+        # evidence already supplied during this repair cycle.
+        repair_cached_reads=list(state.get('repair_cached_reads',[]))
         for key,value in state.get('cache',{}).items():
             if ':read_file:' not in key:
                 continue
@@ -735,7 +736,8 @@ def _run_agent(m,project,task,resume=None):
                 continue
             if cached_path in set(state.get('repair_allowed_reads',[])):
                 cached_targeted_evidence[cached_path]=value
-                repair_cached_reads.append(cached_args)
+                if cached_args not in repair_cached_reads:
+                    repair_cached_reads.append(cached_args)
         state['repair_cached_reads']=repair_cached_reads
         prompt={'model':model,'temperature':0.2,'max_tokens':760,
                 'chat_template_kwargs':{'enable_thinking':False},
