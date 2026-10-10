@@ -177,6 +177,38 @@ def _yaml_list(value: str) -> list[str]:
     return [item for raw in value.split(",") if (item := _yaml_scalar(raw))]
 
 
+
+def select_build_targets(targets: list[dict], selector: str = "") -> list[int]:
+    """Select build.yaml targets by label, shield/board, or split-side alias.
+
+    An empty selector returns every target. Left/Right are aliases for shields
+    ending in _L/_R or _left/_right. Ambiguous selectors are rejected.
+    Returned indices preserve each target's original build directory identity.
+    """
+    if not selector or not selector.strip():
+        return list(range(len(targets)))
+    wanted = selector.strip().casefold()
+    matches = []
+    for index, target in enumerate(targets):
+        label = str(target.get("artifact-name") or f"target-{index + 1}").casefold()
+        board = str(target.get("board") or "").casefold()
+        shield = str(target.get("shield") or "").casefold()
+        tokens = shield.split()
+        matched = wanted in (label, board, shield) or wanted in tokens
+        if wanted in ("left", "l"):
+            matched = matched or any(token.endswith(("_l", "_left")) for token in tokens)
+        elif wanted in ("right", "r"):
+            matched = matched or any(token.endswith(("_r", "_right")) for token in tokens)
+        if matched:
+            matches.append(index)
+    if not matches:
+        raise ValueError(f"no build.yaml target matches {selector!r}")
+    if len(matches) > 1:
+        raise ValueError(f"build target selector {selector!r} is ambiguous")
+    return matches
+
+
+
 def select_destination(version: str, project: str) -> str:
     if version not in ("v0.3", "v0.4"):
         raise ValueError("unsupported or unknown ZMK version")
