@@ -1311,14 +1311,15 @@ Never claim a test passed without a successful tool result. If blocked state the
                 if readonly and not edited and (state.get('hypothesis_ready') or state.get('experiment_required')):
                     state['discovery_after_hypothesis']=state.get('discovery_after_hypothesis',0)+1
                     if state['discovery_after_hypothesis']>=5:
-                        state['status']='blocked'
-                        state['next_action']='Discovery budget exhausted after an evidence-based hypothesis; checkpoint saved for human review.'
-                        result=('exit=125\nDiscovery budget exhausted after an evidence-based hypothesis. '
-                                'Make the smallest safe edit and run build/test, or report the specific missing fact that prevents an edit.')
+                        # Keep the run alive: active_definitions() now exposes only
+                        # edit/verification tools, so the model must act on its
+                        # actionable hypothesis instead of being blocked here.
+                        state['next_action']='Discovery budget exhausted after an actionable hypothesis. Make the smallest safe edit now and run build/test.'
+                        result=('exit=125\nDiscovery budget exhausted. Stop discovery and use the existing actionable hypothesis to edit, then build/test.')
                         experiment_budget_exhausted=True
                 if experiment_budget_exhausted:
-                    # The fifth bounded discovery call is the final call: execute it,
-                    # record the exhausted gate, then stop before another model round.
+                    # Do not dispatch the rejected sixth read. Return the gate result
+                    # to the model and let the next round choose an enabled edit tool.
                     pass
                 elif (fn=='git_diff' and state.get('phase')=='post_edit_repair' and (state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>=1)):
                     result='exit=125\nPOST_EDIT_REPAIR git_diff already supplied as repair evidence; make the smallest follow-up edit now, then build/test.'
