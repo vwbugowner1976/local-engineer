@@ -730,15 +730,19 @@ class SafetyTests(unittest.TestCase):
         reads=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1,2,3,4)]
         reflection={'choices':[{'message':{'content':json.dumps({'hypothesis':'the selected value is wrong','target_file':'calc.py','expected_effect':'value becomes 2','smallest_edit':'replace value = 0 with value = 2','missing_evidence':''})}}]}
         post=[tool('read_file',{'path':'calc.py','start_line':n,'end_line':n}) for n in (1,2,3,4,1)]
+        edit=tool('replace_text',{'path':'calc.py','old':'value = 0','new':'value = 2'})
+        final={'choices':[{'message':{'content':'Corrected the source and verified the repair.'}}]}
+        command_results=iter([(1,"assertion: actual 'Saved' != expected 'Ready'"),(0,'assertion passed')])
         with patch.object(m,'ensure_bonsai'), patch.object(m,'model_id',return_value='Bonsai'), \
-             patch.object(m,'get_json',side_effect=reads+[reflection]+post), \
+             patch.object(m,'get_json',side_effect=reads+[reflection]+post+[edit,final]), \
              patch.object(self.project,'build',return_value=(0,'build ok')), \
-             patch.object(self.project,'command',return_value=(1,"assertion: actual 'Saved' != expected 'Ready'")):
-            self.assertEqual(m.agent(self.project,'repair failing peer selection'),2)
+             patch.object(self.project,'command',side_effect=lambda *args: next(command_results)):
+            self.assertEqual(m.agent(self.project,'repair failing peer selection'),0)
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflections_this_generation'],1)
-        self.assertEqual(state['discovery_after_hypothesis'],5)
-        self.assertNotEqual(state['status'],'blocked')
+        self.assertGreaterEqual(state['discovery_after_hypothesis'],5)
+        self.assertEqual(state['status'],'completed')
+        self.assertEqual((self.root/'calc.py').read_text().splitlines()[0],'value = 2')
     def test_hypothesis_gate_prefers_an_edit_after_initial_discovery(self):
         (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
         (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
