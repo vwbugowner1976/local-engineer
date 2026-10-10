@@ -7,7 +7,35 @@ from datetime import datetime
 
 from zmk_support import (ZMK_VERSION_UNKNOWN, artifact_name, copy_uf2,
                          detect_zmk_version, discover_zmk_project,
-                         select_destination, verify_copy)
+                         select_build_targets, select_destination, verify_copy)
+
+
+
+class ZmkBuildTargetSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.targets = [
+            {"board": "seeeduino_xiao_ble", "shield": "koZakura48_R rgbled_adapter"},
+            {"board": "seeeduino_xiao_ble", "shield": "koZakura48_L rgbled_adapter",
+             "snippet": "studio-rpc-usb-uart"},
+            {"board": "seeeduino_xiao_ble", "shield": "settings_reset"},
+        ]
+
+    def test_empty_selector_keeps_all_targets(self):
+        self.assertEqual(select_build_targets(self.targets), [0, 1, 2])
+
+    def test_left_and_right_select_split_shields(self):
+        self.assertEqual(select_build_targets(self.targets, "Left"), [1])
+        self.assertEqual(select_build_targets(self.targets, "Right"), [0])
+
+    def test_utility_target_can_be_selected_by_shield(self):
+        self.assertEqual(select_build_targets(self.targets, "settings_reset"), [2])
+
+    def test_unknown_or_ambiguous_selector_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "no build.yaml target"):
+            select_build_targets(self.targets, "Peripheral")
+        duplicate = self.targets + [dict(self.targets[1])]
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            select_build_targets(duplicate, "Left")
 
 
 class ZmkVersionDetectionTests(unittest.TestCase):
