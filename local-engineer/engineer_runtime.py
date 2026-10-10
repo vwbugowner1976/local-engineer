@@ -1038,6 +1038,13 @@ Never claim a test passed without a successful tool result. If blocked state the
             rc,text=project.read_file(args['path'],args.get('start_line',1),args.get('end_line',160))
             refreshed=str(state['generation'])+':read_file:'+json.dumps(args,sort_keys=True)
             state['cache'][refreshed]='exit=%s\\n%s'%(rc,m.clip(text))
+        # Preserve identities from the checkpoint before verify_now invalidates the
+        # transient cache; the subsequent repair reflection still relies on this evidence.
+        state['repair_cached_reads']=[
+            json.loads(key.split(':read_file:',1)[1])
+            for key in prior_reads
+            if ':read_file:' in key
+        ]
         save()
         if (edited and resume) or (project.cfg.get('initial_verify') and project.cfg.get('task_mode')!='inspect'):
             verify_now()
