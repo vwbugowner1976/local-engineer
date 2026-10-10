@@ -722,15 +722,21 @@ def _run_agent(m,project,task,resume=None):
             state['repair_current_diff']=diff
         previous_hypothesis=state.get('repair_previous_hypothesis') or state.get('hypothesis','')
         cached_targeted_evidence={}
+        # Keep the identity of evidence supplied to the repair reflection separate
+        # from the transient read cache, which verification may invalidate.
+        repair_cached_reads=[]
         for key,value in state.get('cache',{}).items():
             if ':read_file:' not in key:
                 continue
             try:
-                cached_path=json.loads(key.split(':read_file:',1)[1]).get('path','')
+                cached_args=json.loads(key.split(':read_file:',1)[1])
+                cached_path=cached_args.get('path','')
             except (TypeError,ValueError,AttributeError):
                 continue
             if cached_path in set(state.get('repair_allowed_reads',[])):
                 cached_targeted_evidence[cached_path]=value
+                repair_cached_reads.append(cached_args)
+        state['repair_cached_reads']=repair_cached_reads
         prompt={'model':model,'temperature':0.2,'max_tokens':760,
                 'chat_template_kwargs':{'enable_thinking':False},
                 'messages':[{'role':'system','content':'You are refining a failed code edit, not starting repository discovery. Return ONLY one JSON object with keys: hypothesis, target_file, expected_effect, smallest_edit, missing_evidence, targeted_reads. Compare the previous hypothesis, exact current diff, previous verification, and current failing expected/actual. State what observable behavior did NOT change. Prefer a concrete follow-up edit now. If a read is truly required, targeted_reads must contain at most two project-relative files directly justified by the changed file, failing test, or a direct symbol dependency. Broad list/search/unrelated reads are forbidden.'},
@@ -1309,18 +1315,11 @@ Never claim a test passed without a successful tool result. If blocked state the
                     result='exit=125\nPOST_EDIT_REPAIR git_diff already supplied as repair evidence; make the smallest follow-up edit now, then build/test.'
                     repeats[key]=repeats.get(key,0)+1
                 elif (fn=='read_file' and state.get('phase')=='post_edit_repair'
-                      and any(
-                          _cached_read_args == args
-                          for _cached_read_args in (
-                              json.loads(cached_key.split(':read_file:',1)[1])
-                              for cached_key in state['cache']
-                              if ':read_file:' in cached_key
-                          )
-                      )):
-                    # Compare decoded arguments rather than serialized key text:
-                    # JSON whitespace/key ordering and generation prefixes are not
-                    # part of the semantic identity of a read request.
-                    result='exit=125\\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
+                      and args in state.get('repair_cached_reads',[])):
+                    # Reflection may have consumed this evidence before verification
+                    # invalidated the transient cache. Keep the evidence identity for
+                    # the duration of the repair cycle so it cannot be read again.
+                    result='exit=125\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
                     repeats[key]=repeats.get(key,0)+1
                 elif (readonly and key in state['cache']
                       and not (fn=='read_file' and state.get('hypothesis_ready') and not edited)):
