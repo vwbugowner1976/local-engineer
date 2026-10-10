@@ -805,19 +805,31 @@ def _run_agent(m,project,task,resume=None):
         response=request_completion(m,prompt)
         note=response['choices'][0]['message'].get('content') or ''
         structured={}
-        for _ in range(2):
-            candidate=note.strip()
-            if candidate.startswith('```'):
-                candidate=candidate.split('\\n',1)[-1].rsplit('```',1)[0].strip()
-            try:
-                decoded=json.loads(candidate)
-                if isinstance(decoded,dict):
-                    structured=decoded
-                    break
-            except (TypeError,ValueError):
-                pass
-            response=request_completion(m,prompt)
-            note=response['choices'][0]['message'].get('content') or ''
+        candidate=note.strip()
+        if candidate.startswith('```'):
+            candidate=candidate.split('\\n',1)[-1].rsplit('```',1)[0].strip()
+        try:
+            decoded=json.loads(candidate)
+            if isinstance(decoded,dict):
+                structured=decoded
+        except (TypeError,ValueError):
+            # Some compatible local models return a useful prose reflection instead
+            # of the requested JSON. Preserve that evidence as the hypothesis rather
+            # than consuming the next completion (which belongs to the main agent).
+            # Retry only when the structured call returned no content at all, such as
+            # a tool-call-shaped response with no assistant text.
+            if not note.strip():
+                response=request_completion(m,prompt)
+                note=response['choices'][0]['message'].get('content') or ''
+                candidate=note.strip()
+                if candidate.startswith('```'):
+                    candidate=candidate.split('\\n',1)[-1].rsplit('```',1)[0].strip()
+                try:
+                    decoded=json.loads(candidate)
+                    if isinstance(decoded,dict):
+                        structured=decoded
+                except (TypeError,ValueError):
+                    pass
         source_paths=[]
         for item in evidence:
             try: source_paths.append(json.loads(item).get('path',''))
@@ -1012,14 +1024,17 @@ Never claim a test passed without a successful tool result. If blocked state the
         return definitions
     save()
     try:
-        if (edited and resume) or (project.cfg.get('initial_verify') and project.cfg.get('task_mode')!='inspect'):
-            verify_now()
+        # Refresh checkpointed source evidence before any resume-triggered reflection.
+        # The cache is intentionally cleared above because files may have changed while
+        # offline; reflection must use fresh reads, not run before evidence is restored.
         for key in prior_reads:
             args=json.loads(key.split(':read_file:',1)[1])
             rc,text=project.read_file(args['path'],args.get('start_line',1),args.get('end_line',160))
             refreshed=str(state['generation'])+':read_file:'+json.dumps(args,sort_keys=True)
-            state['cache'][refreshed]='exit=%s\n%s'%(rc,m.clip(text))
+            state['cache'][refreshed]='exit=%s\\n%s'%(rc,m.clip(text))
         save()
+        if (edited and resume) or (project.cfg.get('initial_verify') and project.cfg.get('task_mode')!='inspect'):
+            verify_now()
         for _ in range(m.MAX_ROUNDS):
             # A successful read only resolves the uncertain edit after its result
             # has been sent to the model in the next request.
