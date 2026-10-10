@@ -1593,6 +1593,16 @@ Never claim a test passed without a successful tool result. If blocked state the
                     or state.get('targeted_discovery_required')
                     or state.get('rounds',0)<8))
                 if not bounded_read_gate:
+                    if (state.get('hypothesis_ready') and not edited
+                            and not state.get('repeated_tool_recovery_used')):
+                        # Give an actionable hypothesis one recovery turn after a
+                        # repeated-call loop. The next tool schema is already narrowed
+                        # to edit/verification, so discovery cannot restart indefinitely.
+                        state['repeated_tool_recovery_used']=True
+                        state['next_action']='Repeated tool call detected. Do not repeat it; use the actionable hypothesis with replace_text/write_file, then build/test.'
+                        repeats.clear()
+                        save()
+                        continue
                     state['status']='blocked'; state['next_action']='Repeated tool loop; review failed attempts and resume with a new hypothesis.'
                     save(); print('[blocked] repeated tool loop; checkpoint saved',flush=True); return 2
         state['status']='budget_exhausted'; save()
