@@ -1309,11 +1309,17 @@ Never claim a test passed without a successful tool result. If blocked state the
                     result='exit=125\nPOST_EDIT_REPAIR git_diff already supplied as repair evidence; make the smallest follow-up edit now, then build/test.'
                     repeats[key]=repeats.get(key,0)+1
                 elif (fn=='read_file' and state.get('phase')=='post_edit_repair'
-                      and any(cached_key.split(':',1)[-1]=='read_file:'+json.dumps(args,sort_keys=True)
-                              for cached_key in state['cache'])):
-                    # A resume increments the generation, but that must not make
-                    # previously supplied evidence look like a new read. Compare
-                    # canonical tool arguments across generations.
+                      and any(
+                          _cached_read_args == args
+                          for _cached_read_args in (
+                              json.loads(cached_key.split(':read_file:',1)[1])
+                              for cached_key in state['cache']
+                              if ':read_file:' in cached_key
+                          )
+                      )):
+                    # Compare decoded arguments rather than serialized key text:
+                    # JSON whitespace/key ordering and generation prefixes are not
+                    # part of the semantic identity of a read request.
                     result='exit=125\\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
                     repeats[key]=repeats.get(key,0)+1
                 elif (readonly and key in state['cache']
