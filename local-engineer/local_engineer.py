@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse, base64, datetime as dt, hashlib, json, os, pathlib, re, shlex, subprocess, sys, urllib.request, urllib.error
 from zmk_support import (artifact_name, copy_uf2, discover_zmk_project,
-                         detect_zmk_version, select_destination)
+                         detect_zmk_version, select_build_targets, select_destination)
 
 HOME = pathlib.Path.home()
 CFG = pathlib.Path(os.environ.get('LOCAL_ENGINEER_CONFIG', HOME/'.config/local-engineer/projects.json'))
@@ -230,7 +230,7 @@ class Project:
         info['project'] = self.cfg.get('artifact_project_name') or self.name
         return info
 
-    def _build_zmk(self, info):
+    def _build_zmk(self, info, target_selector=''):
         if info['version'] not in ('v0.3', 'v0.4'):
             return 126, 'ZMK_VERSION_UNKNOWN: cannot select a ZMK build environment'
         if not info['is_zmk']:
@@ -294,10 +294,16 @@ class Project:
             if board_rc not in (0, 1):
                 return board_rc, 'cannot safely inspect project boards directory: ' + board_out
             has_project_boards = board_rc == 0
+        try:
+            selected_indices = set(select_build_targets(info['targets'], target_selector))
+        except ValueError as error:
+            return 126, str(error)
         results = []
         used_names = set()
         used_labels = set()
         for index, target in enumerate(info['targets']):
+            if index not in selected_indices:
+                continue
             label = target.get('artifact-name') or f"target-{index+1}"
             if not re.fullmatch(r'[A-Za-z0-9._-]+', label):
                 return 126, 'unsafe build target label in build.yaml'
@@ -471,12 +477,12 @@ print(json.dumps({'source':str(src),'destination':str(dst),'size':size,'sha256':
         if not ok: return 126, why
         return self.exec(cmd, timeout)
 
-    def build(self, extra=''):
+    def build(self, target=''):
         zmk = self.zmk_project_info()
         if zmk['is_zmk']:
-            if extra:
-                return 126, 'extra build arguments are not supported for discovered ZMK targets'
-            return self._build_zmk(zmk)
+            return self._build_zmk(zmk, target)
+        if target:
+            return 126, 'target selection is only supported for discovered ZMK build.yaml targets'
         cmd = self.build_cmd
         if cmd == 'auto':
             probe = "if [ -x ./ai-build ]; then echo './ai-build'; elif [ -f ./build_local.sh ]; then echo 'bash build_local.sh'; elif [ -f ./build-local.sh ]; then echo 'bash build-local.sh'; elif [ -f ./Cargo.toml ]; then echo 'cargo build'; elif [ -f ./Makefile ]; then echo 'make'; else exit 2; fi"
@@ -521,7 +527,7 @@ def tool_defs(phase='discovery'):
       f('replace_text','Replace exact text in a file. Prefer this for targeted edits.',{'path':{'type':'string'},'old':{'type':'string'},'new':{'type':'string'},'count':{'type':'integer','minimum':1}},['path','old','new']),
       f('write_file','Create or rewrite a project file. Use mainly for small/new files.',{'path':{'type':'string'},'content':{'type':'string'}},['path','content']),
       f('run_command','Run an allowlisted build/test or narrowly targeted inspection command in the project.',{'command':{'type':'string'},'timeout':{'type':'integer','minimum':1,'maximum':1800}},['command']),
-      f('build_project','Run the configured build or build every discovered ZMK target, then discover, copy, and verify generated UF2 artifacts.',{},[]),
+      f('build_project','Run the configured build or build discovered ZMK target(s). For ZMK, target may be Left, Right, settings_reset, an exact shield/board, or an artifact-name; omit it to build all targets.',{'target':{'type':'string'}},[]),
     ]
     if phase == 'force_action':
         return edit_verify
@@ -558,7 +564,7 @@ def dispatch(project, name, args):
         elif name == 'replace_text': rc,out = project.replace_text(args['path'], args['old'], args['new'], args.get('count',1))
         elif name == 'write_file': rc,out = project.write_file(args['path'], args['content'])
         elif name == 'run_command': rc,out = project.command(args['command'], args.get('timeout',900))
-        elif name == 'build_project': rc,out = project.build()
+        elif name == 'build_project': rc,out = project.build(args.get('target',''))
         else: return 'unknown tool'
         return f'exit={rc}\n{clip(out)}'
     except (TypeError, ValueError) as e:
