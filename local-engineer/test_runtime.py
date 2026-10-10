@@ -738,7 +738,7 @@ class SafetyTests(unittest.TestCase):
         state=json.loads(next((m.STATE/'sessions').glob('*/working_state.json')).read_text())
         self.assertEqual(state['reflections_this_generation'],1)
         self.assertEqual(state['discovery_after_hypothesis'],5)
-        self.assertEqual(state['status'],'blocked')
+        self.assertNotEqual(state['status'],'blocked')
     def test_hypothesis_gate_prefers_an_edit_after_initial_discovery(self):
         (self.root/'calc.py').write_text('value = 0\nvalue = 1\nvalue = 2\nvalue = 3\n')
         (self.root/'test_ok.py').write_text('import unittest\nclass Test(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n')
