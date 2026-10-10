@@ -1308,8 +1308,13 @@ Never claim a test passed without a successful tool result. If blocked state the
                 elif (fn=='git_diff' and state.get('phase')=='post_edit_repair' and (state.get('repair_git_diff_used',0)>=1 or state.get('repair_edit_failures',0)>=1)):
                     result='exit=125\nPOST_EDIT_REPAIR git_diff already supplied as repair evidence; make the smallest follow-up edit now, then build/test.'
                     repeats[key]=repeats.get(key,0)+1
-                elif (fn=='read_file' and state.get('phase')=='post_edit_repair' and key in state['cache']):
-                    result='exit=125\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
+                elif (fn=='read_file' and state.get('phase')=='post_edit_repair'
+                      and any(cached_key.split(':',1)[-1]=='read_file:'+json.dumps(args,sort_keys=True)
+                              for cached_key in state['cache'])):
+                    # A resume increments the generation, but that must not make
+                    # previously supplied evidence look like a new read. Compare
+                    # canonical tool arguments across generations.
+                    result='exit=125\\nPOST_EDIT_REPAIR cached read already supplied; use the existing evidence or make the follow-up edit.'
                     repeats[key]=repeats.get(key,0)+1
                 elif (readonly and key in state['cache']
                       and not (fn=='read_file' and state.get('hypothesis_ready') and not edited)):
